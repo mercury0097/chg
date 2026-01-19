@@ -1,0 +1,2 @@
+source /Users/machenyang/Desktop/xz-boards-only/build/bootloader/gdbinit/symbols
+source /Users/machenyang/Desktop/xz-boards-only/build/bootloader/gdbinit/connect

@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/Users/machenyang/Desktop/xz-boards-only/build/CMakeFiles/bootloader
+/Users/machenyang/Desktop/xz-boards-only/build/CMakeFiles/bootloader.rule
+/Users/machenyang/Desktop/xz-boards-only/build/CMakeFiles/bootloader-complete.rule
+/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule

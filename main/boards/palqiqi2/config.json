@@ -1,0 +1,22 @@
+{
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "palqiqi",
+            "sdkconfig_append": [
+                "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y",
+                "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v1/16m.csv\"",
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+                "CONFIG_CUSTOM_WAKE_WORD=\"ni hao xiao qi\"",
+                "CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"你好小奇\"",
+                "CONFIG_SPIRAM=y",
+                "CONFIG_SPIRAM_MODE_OCT=y",
+                "CONFIG_SPIRAM_SPEED_80M=y",
+                "CONFIG_SPIRAM_USE_MALLOC=y",
+                "CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y",
+                "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384",
+                "CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768"
+            ]
+        }
+    ]
+}
