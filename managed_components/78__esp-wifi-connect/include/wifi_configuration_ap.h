@@ -48,6 +48,7 @@ private:
     bool is_connecting_ = false;
     esp_netif_t* ap_netif_ = nullptr;
     std::vector<wifi_ap_record_t> ap_records_;
+    std::string sta_ip_;
 
     // 高级配置项
     std::string ota_url_;

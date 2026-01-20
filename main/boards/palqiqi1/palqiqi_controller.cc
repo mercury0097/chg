@@ -25,23 +25,10 @@
 #define IDLE_CHECK_INTERVAL_MS 1000        // 检查间隔1秒
 
 class PalqiqiController {
-private:
-  Palqiqi palqiqi_;
-  TaskHandle_t action_task_handle_ = nullptr;
-  TaskHandle_t idle_task_handle_ = nullptr;
-  QueueHandle_t action_queue_;
-  bool has_hands_ = false;
+public:
+  // 需要被API适配器访问的成员
   bool is_action_in_progress_ = false;
-  bool idle_actions_enabled_ = true;
-  uint32_t last_idle_action_time_ = 0;
-
-  struct PalqiqiActionParams {
-    int action_type;
-    int steps;
-    int speed;
-    int direction;
-    int amount;
-  };
+  bool has_hands_ = false;
 
   enum ActionType {
     ACTION_WALK = 1,
@@ -62,6 +49,22 @@ private:
     ACTION_HAND_WAVE = 16,
     ACTION_HOME = 17,
     ACTION_LOOK_AROUND = 18
+  };
+
+private:
+  Palqiqi palqiqi_;
+  TaskHandle_t action_task_handle_ = nullptr;
+  TaskHandle_t idle_task_handle_ = nullptr;
+  QueueHandle_t action_queue_;
+  bool idle_actions_enabled_ = true;
+  uint32_t last_idle_action_time_ = 0;
+
+  struct PalqiqiActionParams {
+    int action_type;
+    int steps;
+    int speed;
+    int direction;
+    int amount;
   };
 
   static void ActionTask(void *arg) {
@@ -662,4 +665,99 @@ void OttoSwing(int steps, int speed, int amount) {
 
 void OttoJump(int steps, int speed) {
   PalqiqiJump(steps, speed);
+}
+
+// ==================== HTTP API适配器导出函数 ====================
+
+// 当前正在执行的动作名称
+static std::string g_current_action = "";
+
+bool PalqiqiControllerIsIdle() {
+  if (g_palqiqi_controller == nullptr) {
+    return true;
+  }
+  return !g_palqiqi_controller->is_action_in_progress_;
+}
+
+std::string PalqiqiControllerGetCurrentAction() {
+  if (g_palqiqi_controller == nullptr || !g_palqiqi_controller->is_action_in_progress_) {
+    return "";
+  }
+  return g_current_action;
+}
+
+bool PalqiqiControllerHasHands() {
+  if (g_palqiqi_controller == nullptr) {
+    return false;
+  }
+  return g_palqiqi_controller->has_hands_;
+}
+
+bool PalqiqiControllerExecuteAction(const std::string& action, int steps, int speed) {
+  if (g_palqiqi_controller == nullptr) {
+    ESP_LOGE(TAG, "控制器未初始化");
+    return false;
+  }
+
+  // 记录当前动作名称
+  g_current_action = action;
+
+  // 动作名到ActionType的映射
+  // FORWARD = 1, BACKWARD = -1, LEFT = 1, RIGHT = -1
+  if (action == "walk_forward") {
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_WALK, steps, speed, 1, 50);
+  } else if (action == "walk_backward") {
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_WALK, steps, speed, -1, 50);
+  } else if (action == "turn_left") {
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_TURN, steps, speed, 1, 50);
+  } else if (action == "turn_right") {
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_TURN, steps, speed, -1, 50);
+  } else if (action == "home") {
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_HOME, 1, 1000, 1, 0);
+  } else if (action == "stop") {
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_HOME, 1, 1000, 1, 0);
+    g_current_action = "";
+  } else if (action == "jump") {
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_JUMP, steps, speed, 0, 0);
+  } else if (action == "swing") {
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_SWING, steps, speed, 0, 30);
+  } else if (action == "moonwalk") {
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_MOONWALK, steps, speed, 1, 25);
+  } else if (action == "bend") {
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_BEND, steps, speed, 1, 0);
+  } else if (action == "shake_leg") {
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_SHAKE_LEG, steps, speed, 1, 0);
+  } else if (action == "updown") {
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_UPDOWN, steps, speed, 0, 20);
+  } else if (action == "look_around") {
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_LOOK_AROUND, 1, speed, 1, 0);
+  } else if (action == "hands_up") {
+    if (!g_palqiqi_controller->has_hands_) {
+      ESP_LOGW(TAG, "机器人没有手部舵机");
+      g_current_action = "";
+      return false;
+    }
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_HANDS_UP, 1, speed, 0, 0);
+  } else if (action == "hands_down") {
+    if (!g_palqiqi_controller->has_hands_) {
+      ESP_LOGW(TAG, "机器人没有手部舵机");
+      g_current_action = "";
+      return false;
+    }
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_HANDS_DOWN, 1, speed, 0, 0);
+  } else if (action == "hand_wave") {
+    if (!g_palqiqi_controller->has_hands_) {
+      ESP_LOGW(TAG, "机器人没有手部舵机");
+      g_current_action = "";
+      return false;
+    }
+    g_palqiqi_controller->QueueAction(PalqiqiController::ACTION_HAND_WAVE, 1, speed, 0, 0);
+  } else {
+    ESP_LOGW(TAG, "未知的动作: %s", action.c_str());
+    g_current_action = "";
+    return false;
+  }
+
+  ESP_LOGI(TAG, "API执行动作: %s, steps=%d, speed=%d", action.c_str(), steps, speed);
+  return true;
 }

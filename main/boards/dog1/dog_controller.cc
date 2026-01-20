@@ -35,15 +35,29 @@ enum ActionType {
 };
 
 class DogController {
-private:
+public:
+  // 需要被API适配器访问的成员
   Dog dog_;
+  bool is_action_in_progress_ = false;
+  bool is_sleeping_ = false;
+  bool sleep_abort_ = false;
+
+  void QueueAction(ActionType action_type, float steps = 1, int speed = 1000,
+                   int direction = 0, int amount = 30) {
+    DogActionParams params = {
+        .action_type = (int)action_type,
+        .steps = steps,
+        .speed = speed,
+        .direction = direction,
+        .amount = amount};
+    xQueueSend(action_queue_, &params, 0);
+  }
+
+private:
   TaskHandle_t action_task_handle_ = nullptr;
   TaskHandle_t idle_task_handle_ = nullptr;
   QueueHandle_t action_queue_;
-  bool is_action_in_progress_ = false;
   bool sleep_pending_ = false;
-  bool is_sleeping_ = false;
-  bool sleep_abort_ = false;
 
   static void ActionTask(void *arg) {
     DogController *controller = static_cast<DogController *>(arg);
@@ -137,17 +151,6 @@ private:
         controller->dog_.Home();
       }
     }
-  }
-
-  void QueueAction(ActionType action_type, float steps = 1, int speed = 1000,
-                   int direction = 0, int amount = 30) {
-    DogActionParams params = {
-        .action_type = (int)action_type,
-        .steps = steps,
-        .speed = speed,
-        .direction = direction,
-        .amount = amount};
-    xQueueSend(action_queue_, &params, 0);
   }
 
   void LoadTrims() {
@@ -445,4 +448,66 @@ void OttoJump(int steps, int speed) {
            steps, speed);
   // Dog机器人不支持Jump动作，这是一个空实现以保持兼容性
   // 如果需要,可以实现一个类似的dog动作
+}
+
+// ==================== HTTP API适配器导出函数 ====================
+
+// 当前正在执行的动作名称
+static std::string g_current_action = "";
+
+bool DogControllerIsIdle() {
+  if (g_dog_controller == nullptr) {
+    return true;
+  }
+  return !g_dog_controller->is_action_in_progress_;
+}
+
+std::string DogControllerGetCurrentAction() {
+  if (g_dog_controller == nullptr || !g_dog_controller->is_action_in_progress_) {
+    return "";
+  }
+  return g_current_action;
+}
+
+bool DogControllerExecuteAction(const std::string& action, int steps, int speed) {
+  if (g_dog_controller == nullptr) {
+    ESP_LOGE(TAG, "控制器未初始化");
+    return false;
+  }
+
+  // 记录当前动作名称
+  g_current_action = action;
+
+  // 动作名到ActionType的映射
+  if (action == "walk_forward") {
+    g_dog_controller->QueueAction(ACTION_WALK_FORWARD, steps, speed, 0, 30);
+  } else if (action == "walk_backward") {
+    g_dog_controller->QueueAction(ACTION_WALK_BACKWARD, steps, speed, 0, 30);
+  } else if (action == "turn_left") {
+    g_dog_controller->QueueAction(ACTION_TURN_LEFT, steps, speed, 0, 30);
+  } else if (action == "turn_right") {
+    g_dog_controller->QueueAction(ACTION_TURN_RIGHT, steps, speed, 0, 30);
+  } else if (action == "home") {
+    g_dog_controller->QueueAction(ACTION_HOME, 1, 0, 0, 0);
+  } else if (action == "stop") {
+    g_dog_controller->sleep_abort_ = true;
+    g_dog_controller->is_sleeping_ = false;
+    g_dog_controller->dog_.ForceHome();
+    g_current_action = "";
+  } else if (action == "say_hello") {
+    g_dog_controller->QueueAction(ACTION_SAY_HELLO, steps, speed, 0, 30);
+  } else if (action == "sway_back_forth") {
+    g_dog_controller->QueueAction(ACTION_SWAY_BACK_FORTH, steps, speed, 0, 30);
+  } else if (action == "push_up") {
+    g_dog_controller->QueueAction(ACTION_PUSH_UP, steps, speed, 0, 30);
+  } else if (action == "sleep") {
+    g_dog_controller->QueueAction(ACTION_SLEEP, 1, 0, 0, 0);
+  } else {
+    ESP_LOGW(TAG, "未知的动作: %s", action.c_str());
+    g_current_action = "";
+    return false;
+  }
+
+  ESP_LOGI(TAG, "API执行动作: %s, steps=%d, speed=%d", action.c_str(), steps, speed);
+  return true;
 }

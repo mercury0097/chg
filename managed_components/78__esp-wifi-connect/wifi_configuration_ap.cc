@@ -410,10 +410,48 @@ void WifiConfigurationAp::StartWebServer()
 
             this_->Save(ssid_str, password_str);
             cJSON_Delete(json);
+            
+            // 获取机器人连接WiFi后的IP地址（来自 DHCP 事件）
+            std::string robot_ip = this_->sta_ip_;
+            
+            // 读取设备ID（从NVS）
+            std::string device_id = "";
+            nvs_handle_t nvs;
+            if (nvs_open("robot_api", NVS_READONLY, &nvs) == ESP_OK) {
+                size_t len = 0;
+                if (nvs_get_str(nvs, "device_id", nullptr, &len) == ESP_OK && len > 0) {
+                    char* buf = (char*)malloc(len);
+                    if (buf && nvs_get_str(nvs, "device_id", buf, &len) == ESP_OK) {
+                        device_id = buf;
+                    }
+                    if (buf) free(buf);
+                }
+                nvs_close(nvs);
+            }
+            
+            // 构建包含IP和设备ID的响应
+            cJSON* response = cJSON_CreateObject();
+            cJSON_AddBoolToObject(response, "success", true);
+            if (!robot_ip.empty()) {
+                cJSON_AddStringToObject(response, "ip", robot_ip.c_str());
+            }
+            if (!device_id.empty()) {
+                cJSON_AddStringToObject(response, "device_id", device_id.c_str());
+            }
+            
+            char* response_str = cJSON_PrintUnformatted(response);
+            cJSON_Delete(response);
+            
             // 设置成功响应
             httpd_resp_set_type(req, "application/json");
             httpd_resp_set_hdr(req, "Connection", "close");
-            httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
+            if (!response_str) {
+                httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
+                return ESP_OK;
+            }
+            httpd_resp_send(req, response_str, strlen(response_str));
+            
+            free(response_str);
             return ESP_OK;
         },
         .user_ctx = this
@@ -685,6 +723,7 @@ bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::stri
         return false;
     }
     
+    sta_ip_.clear();
     is_connecting_ = true;
     esp_wifi_scan_stop();
     xEventGroupClearBits(event_group_, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
@@ -756,6 +795,9 @@ void WifiConfigurationAp::IpEventHandler(void* arg, esp_event_base_t event_base,
     WifiConfigurationAp* self = static_cast<WifiConfigurationAp*>(arg);
     if (event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        char ip_str[16];
+        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&event->ip_info.ip));
+        self->sta_ip_ = ip_str;
         ESP_LOGI(TAG, "Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
         xEventGroupSetBits(self->event_group_, WIFI_CONNECTED_BIT);
     }

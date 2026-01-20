@@ -17,6 +17,8 @@
 #include "power_manager.h"
 #include "system_reset.h"
 #include "wifi_board.h"
+#include "robot_api_server.h"
+#include "palqiqi_api_adapter.h"
 
 // 切换矢量眼睛或GIF表情模式
 // 定义 USE_VECTOR_EYES 使用矢量眼睛，注释掉则使用GIF表情
@@ -37,6 +39,15 @@ private:
     LcdDisplay* display_;
     PowerManager* power_manager_;
     Button boot_button_;
+    PalqiqiApiAdapter* api_adapter_ = nullptr;
+
+    void InitializeApiServer() {
+        api_adapter_ = new PalqiqiApiAdapter();
+        auto& api_server = RobotApiServer::GetInstance();
+        api_server.Start(api_adapter_, 80);
+        ESP_LOGI(TAG, "HTTP API服务器已启动，端口: 80");
+    }
+
     void InitializePowerManager() {
         power_manager_ =
             new PowerManager(POWER_CHARGE_DETECT_PIN, POWER_ADC_UNIT, POWER_ADC_CHANNEL);
@@ -123,6 +134,8 @@ public:
         InitializePalqiqiController();
         GetBacklight()->RestoreBrightness();
     }
+
+    virtual void StartNetworkServices() override { InitializeApiServer(); }
 
     virtual AudioCodec* GetAudioCodec() override {
         // 使用支持软件 AEC 参考信号的编解码器，提高唤醒词打断灵敏度

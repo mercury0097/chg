@@ -490,6 +490,7 @@ void Application::Start() {
 
   /* Wait for the network to be ready */
   board.StartNetwork();
+  board.StartNetworkServices();
 
   // Update the status bar immediately to show the network state
   display->UpdateStatusBar(true);

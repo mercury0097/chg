@@ -1310,9 +1310,37 @@
                     throw new Error(data.error || 'Connection failed');
                 }
 
-                // Connection successful, redirect to done page
+                // Connection successful
                 button.disabled = false;
-                window.location.href = '/done.html';
+                
+                // ✅ 发送IP到小程序（如果在小程序web-view中打开）
+                const robotIP = data.ip || '';
+                const deviceId = data.device_id || '';
+                
+                if (robotIP) {
+                    // 保存IP到localStorage，供done.html使用
+                    localStorage.setItem('robot_ip', robotIP);
+                    if (deviceId) {
+                        localStorage.setItem('device_id', deviceId);
+                    }
+                    
+                    // 如果在微信小程序中，发送消息给小程序
+                    if (typeof wx !== 'undefined' && wx.miniProgram) {
+                        wx.miniProgram.postMessage({
+                            data: {
+                                type: 'wifi_config_success',
+                                ip: robotIP,
+                                device_id: deviceId,
+                                ssid: ssid.value,
+                                timestamp: Date.now()
+                            }
+                        });
+                        console.log('IP已发送到小程序:', robotIP);
+                    }
+                }
+                
+                // Redirect to done page with IP parameter
+                window.location.href = '/done.html?ip=' + encodeURIComponent(robotIP) + '&device_id=' + encodeURIComponent(deviceId);
             } catch (err) {
                 // Hide loading animation on error
                 loadingOverlay.classList.remove('show');

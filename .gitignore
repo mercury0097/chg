@@ -1,0 +1,30 @@
+# Build output
+build/
+*.o
+*.a
+*.elf
+*.bin
+*.map
+
+# ESP-IDF specific
+sdkconfig.old
+
+# IDE
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+*.egg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
