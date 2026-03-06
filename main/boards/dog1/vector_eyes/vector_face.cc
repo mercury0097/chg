@@ -14,9 +14,19 @@ VectorFace::VectorFace(uint16_t screen_width, uint16_t screen_height,
     : screen_width_(screen_width), screen_height_(screen_height),
       eye_size_(eye_size) {
 
+  // 计算缩放因子（基准是240像素屏幕，80像素眼睛）
+  scale_ = static_cast<float>(eye_size) / 80.0f;
+  
+  // 根据缩放因子调整眼间距
+  eye_inter_distance_ = static_cast<uint16_t>(20 * scale_);
+
   // 左眼需要镜像
   left_eye_.SetMirrored(true);
   right_eye_.SetMirrored(false);
+  
+  // 设置眼睛的缩放因子
+  left_eye_.SetScale(scale_);
+  right_eye_.SetScale(scale_);
 
   // 初始化眼睛位置
   UpdateEyePositions();
@@ -96,9 +106,12 @@ void VectorFace::UpdateEyePositions() {
   int16_t center_x = screen_width_ / 2;
   int16_t center_y = screen_height_ / 2;
 
+  // 根据缩放计算眼睛间距（基准是60像素宽的眼睛）
+  int16_t scaled_eye_width = static_cast<int16_t>(60 * scale_);
+  
   // 左眼在左边，右眼在右边
-  left_eye_.SetCenter(center_x - eye_size_ / 2 - eye_inter_distance_, center_y);
-  right_eye_.SetCenter(center_x + eye_size_ / 2 + eye_inter_distance_,
+  left_eye_.SetCenter(center_x - scaled_eye_width / 2 - eye_inter_distance_, center_y);
+  right_eye_.SetCenter(center_x + scaled_eye_width / 2 + eye_inter_distance_,
                        center_y);
 }
 

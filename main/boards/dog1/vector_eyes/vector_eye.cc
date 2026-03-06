@@ -90,7 +90,21 @@ void VectorEye::ApplyEffects() {
   current_config_.offset_y += static_cast<int16_t>(look_y_ * max_look_offset_y);
 }
 
-EyeConfig *VectorEye::GetCurrentConfig() { return &current_config_; }
+EyeConfig *VectorEye::GetCurrentConfig() { 
+  // 应用缩放因子
+  scaled_config_ = current_config_;
+  scaled_config_.width = static_cast<int16_t>(current_config_.width * scale_);
+  scaled_config_.height = static_cast<int16_t>(current_config_.height * scale_);
+  scaled_config_.offset_x = static_cast<int16_t>(current_config_.offset_x * scale_);
+  scaled_config_.offset_y = static_cast<int16_t>(current_config_.offset_y * scale_);
+  scaled_config_.radius_top = static_cast<int16_t>(current_config_.radius_top * scale_);
+  scaled_config_.radius_bottom = static_cast<int16_t>(current_config_.radius_bottom * scale_);
+  scaled_config_.inverse_radius_top = static_cast<int16_t>(current_config_.inverse_radius_top * scale_);
+  scaled_config_.inverse_radius_bottom = static_cast<int16_t>(current_config_.inverse_radius_bottom * scale_);
+  scaled_config_.inverse_offset_top = static_cast<int16_t>(current_config_.inverse_offset_top * scale_);
+  scaled_config_.inverse_offset_bottom = static_cast<int16_t>(current_config_.inverse_offset_bottom * scale_);
+  return &scaled_config_; 
+}
 
 void VectorEye::ApplyBlink(float blink_factor) {
   blink_factor_ = Clamp(blink_factor, 0.0f, 1.0f);

@@ -13,8 +13,8 @@ end
 
 # Load bootloader symbols
 set confirm off
-    add-symbol-file /Users/machenyang/Desktop/xz-boards-only/build/bootloader/bootloader.elf
+    add-symbol-file /Users/machenyang/Desktop/chg-API/build/bootloader/bootloader.elf
 set confirm on
 
 # Load application symbols
-file /Users/machenyang/Desktop/xz-boards-only/build/xiaozhi.elf
+file /Users/machenyang/Desktop/chg-API/build/xiaozhi.elf

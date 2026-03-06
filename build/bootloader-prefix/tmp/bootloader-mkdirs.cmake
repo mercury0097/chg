@@ -10,18 +10,18 @@ if(NOT EXISTS "/Users/machenyang/Desktop/esp-5.51/v5.5.1/esp-idf/components/boot
   file(MAKE_DIRECTORY "/Users/machenyang/Desktop/esp-5.51/v5.5.1/esp-idf/components/bootloader/subproject")
 endif()
 file(MAKE_DIRECTORY
-  "/Users/machenyang/Desktop/xz-boards-only/build/bootloader"
-  "/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix"
-  "/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix/tmp"
-  "/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix/src/bootloader-stamp"
-  "/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix/src"
-  "/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix/src/bootloader-stamp"
+  "/Users/machenyang/Desktop/chg-API/build/bootloader"
+  "/Users/machenyang/Desktop/chg-API/build/bootloader-prefix"
+  "/Users/machenyang/Desktop/chg-API/build/bootloader-prefix/tmp"
+  "/Users/machenyang/Desktop/chg-API/build/bootloader-prefix/src/bootloader-stamp"
+  "/Users/machenyang/Desktop/chg-API/build/bootloader-prefix/src"
+  "/Users/machenyang/Desktop/chg-API/build/bootloader-prefix/src/bootloader-stamp"
 )
 
 set(configSubDirs )
 foreach(subDir IN LISTS configSubDirs)
-    file(MAKE_DIRECTORY "/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix/src/bootloader-stamp/${subDir}")
+    file(MAKE_DIRECTORY "/Users/machenyang/Desktop/chg-API/build/bootloader-prefix/src/bootloader-stamp/${subDir}")
 endforeach()
 if(cfgdir)
-  file(MAKE_DIRECTORY "/Users/machenyang/Desktop/xz-boards-only/build/bootloader-prefix/src/bootloader-stamp${cfgdir}") # cfgdir has leading slash
+  file(MAKE_DIRECTORY "/Users/machenyang/Desktop/chg-API/build/bootloader-prefix/src/bootloader-stamp${cfgdir}") # cfgdir has leading slash
 endif()

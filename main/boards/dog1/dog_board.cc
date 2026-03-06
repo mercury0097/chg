@@ -34,6 +34,15 @@
 
 extern void InitializeDogController();
 
+namespace {
+constexpr bool kDisplayMirrorX = DISPLAY_MIRROR_X ^ DISPLAY_ROTATE_180;
+constexpr bool kDisplayMirrorY = DISPLAY_MIRROR_Y ^ DISPLAY_ROTATE_180;
+constexpr int kDisplayOffsetX =
+    DISPLAY_ROTATE_180 ? DISPLAY_OFFSET_X_ROTATED : DISPLAY_OFFSET_X;
+constexpr int kDisplayOffsetY =
+    DISPLAY_ROTATE_180 ? DISPLAY_OFFSET_Y_ROTATED : DISPLAY_OFFSET_Y;
+} // namespace
+
 class DogBoard : public WifiBoard {
 private:
     LcdDisplay* display_;
@@ -91,17 +100,23 @@ private:
         esp_lcd_panel_init(panel);
         esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR);
         esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
-        esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+        esp_lcd_panel_mirror(panel, kDisplayMirrorX, kDisplayMirrorY);
+
+        ESP_LOGI(TAG,
+                 "Display rotation config: rotate_180=%d mirror_x=%d mirror_y=%d "
+                 "offset=(%d,%d)",
+                 DISPLAY_ROTATE_180, kDisplayMirrorX, kDisplayMirrorY,
+                 kDisplayOffsetX, kDisplayOffsetY);
 
 #ifdef USE_VECTOR_EYES
         display_ = new DogVectorEyeDisplay(
-            panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-            DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+            panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT, kDisplayOffsetX, kDisplayOffsetY,
+            kDisplayMirrorX, kDisplayMirrorY, DISPLAY_SWAP_XY);
         ESP_LOGI(TAG, "使用矢量眼睛显示模式");
 #else
         display_ = new DogEmojiDisplay(
-            panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-            DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+            panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT, kDisplayOffsetX, kDisplayOffsetY,
+            kDisplayMirrorX, kDisplayMirrorY, DISPLAY_SWAP_XY);
         ESP_LOGI(TAG, "使用GIF表情显示模式");
 #endif
     }
@@ -158,7 +173,6 @@ public:
 };
 
 DECLARE_BOARD(DogBoard);
-
 
 
 

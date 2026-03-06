@@ -1,4 +1,4 @@
-# Install script for directory: /Users/machenyang/Desktop/xz-boards-only/managed_components/espressif__freetype
+# Install script for directory: /Users/machenyang/Desktop/chg-API/managed_components/espressif__freetype
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -39,6 +39,6 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("/Users/machenyang/Desktop/xz-boards-only/build/esp-idf/espressif__freetype/output/cmake_install.cmake")
+  include("/Users/machenyang/Desktop/chg-API/build/esp-idf/espressif__freetype/output/cmake_install.cmake")
 endif()
 

@@ -9,6 +9,7 @@
 
 #include <cstring>
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 
 #define TAG "DogVectorEyeDisplay"
 
@@ -108,10 +109,31 @@ void DogVectorEyeDisplay::SetupCanvas() {
   lv_obj_set_flex_grow(content_, 1);
   lv_obj_center(content_);
 
-  // 创建 canvas 用于绘制眼睛
-  int canvas_size = LV_HOR_RES;
-  canvas_buf_ =
-      (lv_color_t *)lv_malloc(canvas_size * canvas_size * sizeof(lv_color_t));
+  // 创建 canvas 用于绘制眼睛（横屏优化）
+  int canvas_size;
+  if (LV_HOR_RES > LV_VER_RES) {
+    // 横屏模式: 使用完整高度 (135x240 横屏后 240x135)
+    canvas_size = LV_VER_RES;  // 135
+  } else {
+    // 竖屏模式: 使用宽度
+    canvas_size = LV_HOR_RES;
+  }
+  
+  // 优先使用PSRAM分配Canvas缓冲区以节省内部RAM
+  size_t buf_size = canvas_size * canvas_size * sizeof(lv_color_t);
+  
+#if CONFIG_SPIRAM
+  canvas_buf_ = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+  if (canvas_buf_) {
+    ESP_LOGI(TAG, "Canvas使用PSRAM分配: %dx%d (%zu bytes)", canvas_size, canvas_size, buf_size);
+  } else {
+    ESP_LOGW(TAG, "PSRAM分配失败，尝试内部RAM");
+    canvas_buf_ = (lv_color_t *)lv_malloc(buf_size);
+  }
+#else
+  canvas_buf_ = (lv_color_t *)lv_malloc(buf_size);
+  ESP_LOGI(TAG, "Canvas使用内部RAM: %dx%d (%zu bytes)", canvas_size, canvas_size, buf_size);
+#endif
 
   if (canvas_buf_) {
     canvas_ = lv_canvas_create(content_);
@@ -120,15 +142,20 @@ void DogVectorEyeDisplay::SetupCanvas() {
     lv_obj_center(canvas_);
     lv_canvas_fill_bg(canvas_, lv_color_black(), LV_OPA_COVER);
 
-    // 创建 VectorFace
-    face_ = new vector_eyes::VectorFace(canvas_size, canvas_size, 80);
+    // 创建 VectorFace - 按比例缩小眼睛尺寸
+    // 原来240x240用80，现在135x135按比例: 80 * 135 / 240 ≈ 45
+    // 缩放因子 = eye_size / 80
+    int eye_size = (canvas_size * 100) / 240;  // 按比例缩小
+    if (eye_size < 25) eye_size = 25;  // 最小尺寸限制
+    
+    face_ = new vector_eyes::VectorFace(canvas_size, canvas_size, eye_size);
     face_->SetCanvas(canvas_);
     // 使用 Cozmo 风格的青色眼睛
     face_->SetEyeColor(lv_color_hex(0x00D4AA)); // Cozmo 青色
     face_->SetBackgroundColor(lv_color_black());
 
-    ESP_LOGI(TAG, "矢量眼睛初始化完成，canvas大小: %dx%d", canvas_size,
-             canvas_size);
+    ESP_LOGI(TAG, "矢量眼睛初始化完成，canvas大小: %dx%d, 眼睛尺寸: %d, 缩放: %.2f", 
+             canvas_size, canvas_size, eye_size, face_->GetScale());
   } else {
     ESP_LOGE(TAG, "无法分配 canvas 缓冲区");
   }
@@ -141,14 +168,15 @@ void DogVectorEyeDisplay::SetupCanvas() {
   // 创建聊天消息标签
   chat_message_label_ = lv_label_create(content_);
   lv_label_set_text(chat_message_label_, "");
-  lv_obj_set_width(chat_message_label_, LV_HOR_RES * 0.9);
+  // 横屏优化: 使用更大比例的宽度显示字幕
+  lv_obj_set_width(chat_message_label_, LV_HOR_RES * 0.95);
   lv_label_set_long_mode(chat_message_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
   lv_obj_set_style_text_align(chat_message_label_, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_color(chat_message_label_, lv_color_white(), 0);
   lv_obj_set_style_bg_color(chat_message_label_, lv_color_black(), 0);
   lv_obj_set_style_border_width(chat_message_label_, 0, 0);
   lv_obj_set_style_bg_opa(chat_message_label_, LV_OPA_70, 0);
-  lv_obj_set_style_pad_ver(chat_message_label_, 5, 0);
+  lv_obj_set_style_pad_ver(chat_message_label_, 2, 0);  // 横屏优化: 减少垂直padding
   lv_obj_align(chat_message_label_, LV_ALIGN_BOTTOM_MID, 0, 0);
   lv_obj_add_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
 
@@ -360,7 +388,7 @@ void DogVectorEyeDisplay::SetChatMessage(const char *role,
   if (chat_message_label_ == nullptr)
     return;
 
-  if (content == nullptr || strlen(content) == 0) {
+  if (!subtitles_visible_ || content == nullptr || strlen(content) == 0) {
     lv_obj_add_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
     return;
   }

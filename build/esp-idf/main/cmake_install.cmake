@@ -1,4 +1,4 @@
-# Install script for directory: /Users/machenyang/Desktop/xz-boards-only/main
+# Install script for directory: /Users/machenyang/Desktop/chg-API/main
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)

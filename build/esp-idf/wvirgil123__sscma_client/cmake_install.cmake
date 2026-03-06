@@ -1,4 +1,4 @@
-# Install script for directory: /Users/machenyang/Desktop/xz-boards-only/managed_components/wvirgil123__sscma_client
+# Install script for directory: /Users/machenyang/Desktop/chg-API/managed_components/wvirgil123__sscma_client
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)

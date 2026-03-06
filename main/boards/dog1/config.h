@@ -30,18 +30,33 @@
 #define DISPLAY_CLK_PIN GPIO_NUM_9
 #define DISPLAY_DC_PIN GPIO_NUM_46
 #define DISPLAY_RST_PIN GPIO_NUM_11
-#define DISPLAY_CS_PIN GPIO_NUM_12
+#define DISPLAY_CS_PIN GPIO_NUM_2
 
+// ST7789 135x240 横屏配置
+// 注意: 物理屏幕135x240，横屏后逻辑分辨率240x135
+// 芯片显存240x320，偏移值根据实际屏幕可能需要微调
 #define LCD_TYPE_ST7789_SERIAL
-#define DISPLAY_WIDTH 240
-#define DISPLAY_HEIGHT 240
-#define DISPLAY_MIRROR_X true
-#define DISPLAY_MIRROR_Y true
-#define DISPLAY_SWAP_XY false
+#define DISPLAY_WIDTH 240     // 横屏后宽度 (原135x240屏幕)
+#define DISPLAY_HEIGHT 135    // 横屏后高度
+#define DISPLAY_MIRROR_X false  // 横屏模式镜像设置
+#define DISPLAY_MIRROR_Y true   // 横屏模式镜像设置 (修复上下颠倒)
+#define DISPLAY_SWAP_XY true    // 启用坐标轴交换实现横屏
 #define DISPLAY_INVERT_COLOR true
 #define DISPLAY_RGB_ORDER LCD_RGB_ELEMENT_ORDER_RGB
-#define DISPLAY_OFFSET_X 0
-#define DISPLAY_OFFSET_Y 80
+
+// 180°旋转开关：
+// true  = 在当前横屏基础上再旋转180°（适配屏幕倒装）
+// false = 使用原始方向
+#define DISPLAY_ROTATE_180 true
+
+// 偏移值说明: 根据实际显示效果调整
+// 135x240屏幕横屏，芯片显存240x320
+#define DISPLAY_OFFSET_X 40     // (320-240)/2=40
+#define DISPLAY_OFFSET_Y 52     // (240-135)/2≈52
+// 180°旋转后，Y方向通常需要+1像素补偿，避免上下边缘裁切
+#define DISPLAY_OFFSET_X_ROTATED 40
+#define DISPLAY_OFFSET_Y_ROTATED 53
+
 #define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
 #define DISPLAY_SPI_MODE 3
 
@@ -50,8 +65,6 @@
 #define DOG_VERSION "1.0.0"
 
 #endif // _BOARD_CONFIG_H_
-
-
 
 
 

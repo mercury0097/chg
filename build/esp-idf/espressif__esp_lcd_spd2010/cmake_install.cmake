@@ -1,4 +1,4 @@
-# Install script for directory: /Users/machenyang/Desktop/xz-boards-only/managed_components/espressif__esp_lcd_spd2010
+# Install script for directory: /Users/machenyang/Desktop/chg-API/managed_components/espressif__esp_lcd_spd2010
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)

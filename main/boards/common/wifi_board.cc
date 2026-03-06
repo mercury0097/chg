@@ -5,6 +5,7 @@
 #include "system_info.h"
 #include "settings.h"
 #include "assets/lang_config.h"
+#include "ble_wifi_provisioner.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -53,6 +54,8 @@ void WifiBoard::EnterWifiConfigMode() {
     
     // 播报配置 WiFi 的提示
     application.Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "gear", Lang::Sounds::OGG_WIFICONFIG);
+
+    BleWifiProvisioner::GetInstance().Start();
 
     #if CONFIG_USE_ACOUSTIC_WIFI_PROVISIONING
     auto display = Board::GetInstance().GetDisplay();

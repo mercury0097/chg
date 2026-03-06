@@ -26,6 +26,7 @@ public:
     std::vector<wifi_ap_record_t> GetAccessPoints();
     std::string GetSsid();
     std::string GetWebServerUrl();
+    std::string GetStaIpAddress();
 
     // Delete copy constructor and assignment operator
     WifiConfigurationAp(const WifiConfigurationAp&) = delete;
@@ -47,6 +48,7 @@ private:
     esp_timer_handle_t scan_timer_ = nullptr;
     bool is_connecting_ = false;
     esp_netif_t* ap_netif_ = nullptr;
+    esp_netif_t* sta_netif_ = nullptr;
     std::vector<wifi_ap_record_t> ap_records_;
     std::string sta_ip_;
 

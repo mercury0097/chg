@@ -1,2 +1,2 @@
-source /Users/machenyang/Desktop/xz-boards-only/build/gdbinit/symbols
-source /Users/machenyang/Desktop/xz-boards-only/build/gdbinit/connect
+source /Users/machenyang/Desktop/chg-API/build/gdbinit/symbols
+source /Users/machenyang/Desktop/chg-API/build/gdbinit/connect

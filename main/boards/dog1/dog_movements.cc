@@ -199,7 +199,8 @@ void Dog::Home() {
   if (is_dog_resting_ == false) {
     int servo_position[SERVO_COUNT] = {90, 90, 90, 90};
     MoveServos(500, servo_position);
-    DetachServos();
+    // Keep servos attached so neutral pose is actively held.
+    // Detach in SleepPose when we intentionally want limp/power-save behavior.
     is_dog_resting_ = true;
   }
 }
@@ -207,7 +208,7 @@ void Dog::Home() {
 void Dog::ForceHome() {
   int servo_position[SERVO_COUNT] = {90, 90, 90, 90};
   MoveServos(500, servo_position);
-  DetachServos();
+  // ForceHome is used as an immediate safety stop; keep holding neutral.
   is_dog_resting_ = true;
 }
 

@@ -1,4 +1,4 @@
-# Install script for directory: /Users/machenyang/Desktop/xz-boards-only/managed_components/78__esp-opus-encoder
+# Install script for directory: /Users/machenyang/Desktop/chg-API/managed_components/78__esp-opus-encoder
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)

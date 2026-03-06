@@ -140,8 +140,12 @@ private:
     static std::string GenerateActionId();
     static void SendJsonResponse(httpd_req_t* req, int code, const std::string& message, 
                                   const std::string& data_json = "{}");
+    static std::string SanitizeMdnsLabel(const std::string& name);
+    void StartMdns(uint16_t port);
+    void StopMdns();
     httpd_handle_t server_ = nullptr;
     IRobotActions* robot_ = nullptr;
+    bool mdns_started_ = false;
 };
 
 #endif // ROBOT_API_SERVER_H

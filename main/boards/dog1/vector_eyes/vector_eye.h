@@ -27,6 +27,11 @@ public:
      * @brief 设置是否镜像（左眼需要镜像）
      */
     void SetMirrored(bool mirrored);
+    
+    /**
+     * @brief 设置缩放因子
+     */
+    void SetScale(float scale) { scale_ = scale; }
 
     /**
      * @brief 立即应用预设
@@ -75,9 +80,11 @@ private:
     int16_t center_x_ = 0;
     int16_t center_y_ = 0;
     bool is_mirrored_ = false;
+    float scale_ = 1.0f;  // 缩放因子
 
     EyeConfig base_config_;      // 基础配置（表情）
     EyeConfig current_config_;   // 当前配置（含动画效果）
+    EyeConfig scaled_config_;    // 缩放后的配置（用于绘制）
     EyeConfig start_config_;     // 过渡起始配置
     EyeConfig target_config_;    // 过渡目标配置
 

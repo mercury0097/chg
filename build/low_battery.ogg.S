@@ -1,4 +1,4 @@
-/* * Data converted from /Users/machenyang/Desktop/xz-boards-only/main/assets/common/low_battery.ogg
+/* * Data converted from /Users/machenyang/Desktop/chg-API/main/assets/common/low_battery.ogg
  */
 .data
 #if !defined (__APPLE__) && !defined (__linux__)

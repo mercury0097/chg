@@ -12,5 +12,7 @@
     "--compile-commands-dir=/Users/machenyang/Desktop/xz-boards-only/build"
   ],
   "idf.flashType": "UART",
-  "idf.port": "/dev/tty.usbmodem101"
+  "idf.port": "/dev/tty.usbmodem101",
+  "idf.currentSetup": "/Users/machenyang/Desktop/esp-5.51/v5.5.1/esp-idf",
+  "idf.pythonBinPath": "/Users/machenyang/.espressif/python_env/idf5.5_py3.12_env/bin/python"
 }

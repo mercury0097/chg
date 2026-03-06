@@ -125,6 +125,11 @@ std::string WifiConfigurationAp::GetWebServerUrl()
     return "http://192.168.4.1";
 }
 
+std::string WifiConfigurationAp::GetStaIpAddress()
+{
+    return sta_ip_;
+}
+
 void WifiConfigurationAp::StartAccessPoint()
 {
     // Initialize the TCP/IP stack
@@ -132,6 +137,7 @@ void WifiConfigurationAp::StartAccessPoint()
 
     // Create the default event loop
     ap_netif_ = esp_netif_create_default_wifi_ap();
+    sta_netif_ = esp_netif_create_default_wifi_sta();
 
     // Set the router IP address to 192.168.4.1
     esp_netif_ip_info_t ip_info;
@@ -745,7 +751,7 @@ bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::stri
     ESP_LOGI(TAG, "Connecting to WiFi %s", ssid.c_str());
 
     // Wait for the connection to complete for 5 seconds
-    EventBits_t bits = xEventGroupWaitBits(event_group_, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
+    EventBits_t bits = xEventGroupWaitBits(event_group_, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdTRUE, pdFALSE, pdMS_TO_TICKS(20000));
     is_connecting_ = false;
 
     if (bits & WIFI_CONNECTED_BIT) {
@@ -753,7 +759,7 @@ bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::stri
         esp_wifi_disconnect();
         return true;
     } else {
-        ESP_LOGE(TAG, "Failed to connect to WiFi %s", ssid.c_str());
+        ESP_LOGE(TAG, "Failed to connect to WiFi %s (timeout or disconnected)", ssid.c_str());
         return false;
     }
 }
@@ -774,9 +780,13 @@ void WifiConfigurationAp::WifiEventHandler(void* arg, esp_event_base_t event_bas
         wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
         ESP_LOGI(TAG, "Station " MACSTR " left, AID=%d", MAC2STR(event->mac), event->aid);
     } else if (event_id == WIFI_EVENT_STA_CONNECTED) {
-        xEventGroupSetBits(self->event_group_, WIFI_CONNECTED_BIT);
+        // STA link is up, but DHCP may not have assigned an IP yet.
+        // Keep waiting for IP_EVENT_STA_GOT_IP before reporting success.
+        ESP_LOGI(TAG, "STA connected, waiting for IP");
     } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        xEventGroupSetBits(self->event_group_, WIFI_FAIL_BIT);
+        auto *event = reinterpret_cast<wifi_event_sta_disconnected_t *>(event_data);
+        ESP_LOGW(TAG, "STA disconnected, reason=%d", event ? event->reason : -1);
+        // Do not fail immediately on one disconnect; wait for retry and/or timeout.
     } else if (event_id == WIFI_EVENT_SCAN_DONE) {
         std::lock_guard<std::mutex> lock(self->mutex_);
         uint16_t ap_num = 0;
@@ -900,6 +910,10 @@ void WifiConfigurationAp::Stop() {
     if (ap_netif_) {
         esp_netif_destroy(ap_netif_);
         ap_netif_ = nullptr;
+    }
+    if (sta_netif_) {
+        esp_netif_destroy(sta_netif_);
+        sta_netif_ = nullptr;
     }
 
     ESP_LOGI(TAG, "Wifi configuration AP stopped");

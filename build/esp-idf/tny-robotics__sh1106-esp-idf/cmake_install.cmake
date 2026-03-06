@@ -1,4 +1,4 @@
-# Install script for directory: /Users/machenyang/Desktop/xz-boards-only/managed_components/tny-robotics__sh1106-esp-idf
+# Install script for directory: /Users/machenyang/Desktop/chg-API/managed_components/tny-robotics__sh1106-esp-idf
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)

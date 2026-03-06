@@ -1,4 +1,4 @@
-# Install script for directory: /Users/machenyang/Desktop/xz-boards-only/managed_components/espressif__knob
+# Install script for directory: /Users/machenyang/Desktop/chg-API/managed_components/espressif__knob
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)

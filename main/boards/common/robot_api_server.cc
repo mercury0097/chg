@@ -1,8 +1,17 @@
 #include "robot_api_server.h"
+#include <esp_err.h>
 #include <esp_log.h>
 #include <esp_random.h>
 #include <cJSON.h>
+#include <cctype>
 #include <cstring>
+
+#if __has_include(<mdns.h>)
+#include <mdns.h>
+#define HAS_MDNS_SUPPORT 1
+#else
+#define HAS_MDNS_SUPPORT 0
+#endif
 
 #define TAG "RobotApiServer"
 
@@ -93,6 +102,8 @@ void RobotApiServer::Start(IRobotActions* robot, uint16_t port) {
     };
     httpd_register_uri_handler(server_, &device_volume_set);
 
+    StartMdns(port);
+
     ESP_LOGI(TAG, "API服务器启动成功，设备ID: %s, 型号: %s", 
              robot_->GetDeviceId().c_str(), robot_->GetModel().c_str());
 }
@@ -101,11 +112,107 @@ void RobotApiServer::Stop() {
     if (server_ != nullptr) {
         httpd_stop(server_);
         server_ = nullptr;
+        StopMdns();
         ESP_LOGI(TAG, "API服务器已停止");
     }
 }
 
 // ==================== 辅助方法 ====================
+
+std::string RobotApiServer::SanitizeMdnsLabel(const std::string& name) {
+    std::string cleaned;
+    cleaned.reserve(name.size());
+    for (unsigned char ch : name) {
+        char lower = static_cast<char>(std::tolower(ch));
+        char out = ((lower >= 'a' && lower <= 'z') || (lower >= '0' && lower <= '9')) ? lower : '-';
+        if (out == '-' && !cleaned.empty() && cleaned.back() == '-') {
+            continue;
+        }
+        cleaned.push_back(out);
+    }
+
+    while (!cleaned.empty() && cleaned.front() == '-') {
+        cleaned.erase(cleaned.begin());
+    }
+    while (!cleaned.empty() && cleaned.back() == '-') {
+        cleaned.pop_back();
+    }
+    if (cleaned.empty()) {
+        return "robot";
+    }
+    if (cleaned.size() > 63) {
+        cleaned.resize(63);
+        while (!cleaned.empty() && cleaned.back() == '-') {
+            cleaned.pop_back();
+        }
+    }
+    return cleaned;
+}
+
+void RobotApiServer::StartMdns(uint16_t port) {
+#if !HAS_MDNS_SUPPORT
+    ESP_LOGW(TAG, "mDNS component not available, skipping mDNS startup");
+    (void)port;
+    return;
+#else
+    if (mdns_started_) {
+        return;
+    }
+
+    std::string device_id = robot_ ? robot_->GetDeviceId() : "";
+    std::string model = robot_ ? robot_->GetModel() : "";
+
+    std::string base_name = "robot";
+    if (!device_id.empty()) {
+        base_name += "-" + device_id;
+    } else if (!model.empty()) {
+        base_name += "-" + model;
+    } else {
+        base_name += "-" + std::string(BOARD_NAME);
+    }
+
+    std::string hostname = SanitizeMdnsLabel(base_name);
+    esp_err_t err = mdns_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "mDNS 初始化失败: %s", esp_err_to_name(err));
+        return;
+    }
+    mdns_started_ = true;
+
+    mdns_hostname_set(hostname.c_str());
+    std::string instance = device_id.empty() ? "robot" : ("robot-" + device_id);
+    mdns_instance_name_set(instance.c_str());
+
+    err = mdns_service_add(instance.c_str(), "_http", "_tcp", port, nullptr, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "mDNS 服务注册失败: %s", esp_err_to_name(err));
+        mdns_free();
+        mdns_started_ = false;
+        return;
+    }
+
+    if (!device_id.empty()) {
+        mdns_service_txt_item_set("_http", "_tcp", "device_id", device_id.c_str());
+    }
+    if (!model.empty()) {
+    mdns_service_txt_item_set("_http", "_tcp", "model", model.c_str());
+    }
+    mdns_service_txt_item_set("_http", "_tcp", "api", "v1");
+    mdns_service_txt_item_set("_http", "_tcp", "path", "/api/v1");
+#endif
+}
+
+void RobotApiServer::StopMdns() {
+#if !HAS_MDNS_SUPPORT
+    return;
+#else
+    if (!mdns_started_) {
+        return;
+    }
+    mdns_free();
+    mdns_started_ = false;
+#endif
+}
 
 std::string RobotApiServer::GenerateActionId() {
     // 生成6位随机短ID

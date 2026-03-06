@@ -22,9 +22,14 @@ public:
    * @brief 构造函数
    * @param screen_width 屏幕宽度
    * @param screen_height 屏幕高度
-   * @param eye_size 眼睛大小
+   * @param eye_size 眼睛大小（用于计算缩放比例，基准值80）
    */
   VectorFace(uint16_t screen_width, uint16_t screen_height, uint16_t eye_size);
+  
+  /**
+   * @brief 获取缩放因子
+   */
+  float GetScale() const { return scale_; }
 
   /**
    * @brief 设置绘图 canvas
@@ -90,7 +95,8 @@ private:
   uint16_t screen_width_;
   uint16_t screen_height_;
   uint16_t eye_size_;
-  uint16_t eye_inter_distance_ = 20; // 两眼间距（Cozmo风格，适当分开）
+  float scale_ = 1.0f;                // 缩放因子
+  uint16_t eye_inter_distance_ = 30;  // 两眼间距（Cozmo风格，适当分开）
 
   VectorEye left_eye_;
   VectorEye right_eye_;

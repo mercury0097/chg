@@ -1,4 +1,4 @@
-/* * Data converted from /Users/machenyang/Desktop/xz-boards-only/main/assets/locales/zh-CN/1.ogg
+/* * Data converted from /Users/machenyang/Desktop/chg-API/main/assets/locales/zh-CN/1.ogg
  */
 .data
 #if !defined (__APPLE__) && !defined (__linux__)
