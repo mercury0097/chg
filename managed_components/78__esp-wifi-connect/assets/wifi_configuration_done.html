@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WiFi Configuration</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            font-family: Arial, sans-serif;
+            /* Prevent content from overflowing */
+            max-height: 100vh;
+            box-sizing: border-box;
+            padding: 20px;
+        }
+
+        .checkmark {
+            width: 150px;
+            height: 150px;
+            margin-bottom: 30px;
+        }
+
+        .message {
+            text-align: center;
+            font-size: 20px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <svg class="checkmark" viewBox="0 0 52 52">
+            <circle class="checkmark__circle" cx="26" cy="26" r="25" fill="none" stroke="#4CAF50" stroke-width="2"/>
+            <path class="checkmark__check" fill="none" stroke="#4CAF50" stroke-width="2" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
+        </svg>
+        
+        <div class="message">
+            <p>配网成功！设备将在 <span id="countdown">3</span> 秒后重启</p>
+            <p>Success! Device will restart in <span id="countdown-en">3</span> seconds</p>
+            <p id="ip-info" style="margin-top: 20px; font-size: 14px; color: #666;"></p>
+        </div>
+    </div>
+    
+    <script>
+        window.addEventListener('load', function() {
+            // ✅ 获取IP地址（从URL参数或localStorage）
+            const urlParams = new URLSearchParams(window.location.search);
+            let robotIP = urlParams.get('ip') || localStorage.getItem('robot_ip') || '';
+            let deviceId = urlParams.get('device_id') || localStorage.getItem('device_id') || '';
+            
+            // 显示IP信息
+            const ipInfo = document.getElementById('ip-info');
+            if (robotIP) {
+                ipInfo.textContent = '机器人IP: ' + robotIP;
+                
+                // ✅ 发送IP到小程序（双保险）
+                if (typeof wx !== 'undefined' && wx.miniProgram) {
+                    wx.miniProgram.postMessage({
+                        data: {
+                            type: 'wifi_config_success',
+                            ip: robotIP,
+                            device_id: deviceId,
+                            timestamp: Date.now()
+                        }
+                    });
+                    console.log('IP已发送到小程序 (done页面):', robotIP);
+                }
+            }
+            
+            let count = 3;
+            const countdownElement = document.getElementById('countdown');
+            const countdownEnElement = document.getElementById('countdown-en');
+            
+            const timer = setInterval(function() {
+                count--;
+                countdownElement.textContent = count;
+                countdownEnElement.textContent = count;
+                
+                if (count <= 0) {
+                    clearInterval(timer);
+                    
+                    // ✅ 最后一次尝试发送IP到小程序
+                    if (robotIP && typeof wx !== 'undefined' && wx.miniProgram) {
+                        wx.miniProgram.postMessage({
+                            data: {
+                                type: 'wifi_config_complete',
+                                ip: robotIP,
+                                device_id: deviceId,
+                                timestamp: Date.now()
+                            }
+                        });
+                    }
+                    
+                    fetch('/reboot', {
+                        method: 'POST'
+                    })
+                    .then(response => {
+                        if (response.ok) {
+                            console.log('重启指令已发送');
+                            
+                            // ✅ 尝试返回小程序
+                            if (typeof wx !== 'undefined' && wx.miniProgram) {
+                                wx.miniProgram.navigateBack({delta: 1});
+                            } else {
+                                window.close();
+                            }
+                        } else {
+                            console.error('发送重启指令失败');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                    });
+                }
+            }, 1000);
+        });
+    </script>
+</body>
+</html>
