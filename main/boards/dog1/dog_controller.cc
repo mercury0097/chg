@@ -5,6 +5,7 @@
 #include "mcp_server.h"
 #include "settings.h"
 #include <esp_log.h>
+#include <esp_random.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
@@ -170,30 +171,41 @@ private:
           controller->dog_.FlinchBack(params.speed, params.amount);
           break;
         case ACTION_TOUCH_ACK:
-          controller->dog_.CuriousLean(700, 10);
+          // Keep the hook but do not auto-run a touch acknowledge motion.
           break;
         case ACTION_TOUCH_WARM:
-          controller->dog_.SayHello(1, 700, 12);
-          controller->dog_.SwayBackForth(1, 1000, 10);
+          controller->dog_.PlayBow(1200, 24);
           break;
         case ACTION_TOUCH_SOOTHE:
-          controller->dog_.SwayBackForth(1, 1500, 6);
+          if ((esp_random() % 3) == 0) {
+            controller->dog_.WalkBackward(1, 700, 14);
+          } else if ((esp_random() & 1U) == 0) {
+            controller->dog_.TurnLeft(2, 820, 16);
+          } else {
+            controller->dog_.TurnRight(2, 820, 16);
+          }
           break;
         case ACTION_TOUCH_RECOIL:
-          controller->dog_.FlinchBack(420, 14);
+          if ((esp_random() % 3) == 0) {
+            controller->dog_.WalkBackward(3, 700, 14);
+          } else if ((esp_random() & 1U) == 0) {
+            controller->dog_.TurnLeft(3, 820, 16);
+          } else {
+            controller->dog_.TurnRight(3, 820, 16);
+          }
           break;
         case ACTION_TOUCH_ALERT:
-          controller->dog_.FlinchBack(380, 12);
-          controller->dog_.TurnLeft(1, 800, 8);
+          controller->dog_.SurpriseJumpPrep(520, 78, 22);
           break;
         default:
           ESP_LOGW(TAG, "未知的动作类型: %d", params.action_type);
           break;
         }
         
-        // 每个动作完成后自动回到中立位置(除非动作本身就是Home)
+        // 每个动作完成后自动回到中立位置，部分动作会自行完成复位。
         if (params.action_type != ACTION_HOME &&
-            params.action_type != ACTION_SLEEP) {
+            params.action_type != ACTION_SLEEP &&
+            params.action_type != ACTION_TOUCH_WARM) {
           ESP_LOGI(TAG, "动作完成，回到中立位置");
           controller->dog_.Home();
         }
@@ -261,9 +273,9 @@ private:
 public:
   DogController() {
     // Init参数顺序: left_rear_leg, left_front_leg, right_front_leg, right_rear_leg
-    // 这里按“历史动作映射”重排，保证在修正config腿位命名后，现有动作效果保持不变。
-    dog_.Init(RIGHT_REAR_LEG_PIN, RIGHT_FRONT_LEG_PIN, LEFT_REAR_LEG_PIN,
-              LEFT_FRONT_LEG_PIN);
+    // 直接按真实接线初始化，后续动作全部按真实腿位语义编写。
+    dog_.Init(LEFT_REAR_LEG_PIN, LEFT_FRONT_LEG_PIN, RIGHT_FRONT_LEG_PIN,
+              RIGHT_REAR_LEG_PIN);
     ESP_LOGI(TAG, "Dog机器人初始化");
     action_queue_ = xQueueCreate(10, sizeof(DogActionParams));
     StartActionTaskIfNeeded();
@@ -554,7 +566,8 @@ void OttoJump(int steps, int speed) {
 
 namespace {
 ActionType SelectTouchEmotionAction(const char *emotion) {
-  if (emotion == nullptr || strcmp(emotion, "neutral") == 0) {
+  if (emotion == nullptr || strcmp(emotion, "neutral") == 0 ||
+      strcmp(emotion, "thinking") == 0 || strcmp(emotion, "focused") == 0) {
     return ACTION_HOME;
   }
 
@@ -567,13 +580,15 @@ ActionType SelectTouchEmotionAction(const char *emotion) {
     return ACTION_TOUCH_WARM;
   }
 
-  if (strcmp(emotion, "sad") == 0 || strcmp(emotion, "crying") == 0 ||
-      strcmp(emotion, "sleepy") == 0) {
-    return ACTION_TOUCH_SOOTHE;
+  if (strcmp(emotion, "surprised") == 0 || strcmp(emotion, "shocked") == 0) {
+    return ACTION_TOUCH_ALERT;
   }
 
-  if (strcmp(emotion, "surprised") == 0) {
-    return ACTION_TOUCH_ALERT;
+  if (strcmp(emotion, "sad") == 0 || strcmp(emotion, "crying") == 0 ||
+      strcmp(emotion, "sleepy") == 0 || strcmp(emotion, "relaxed") == 0 ||
+      strcmp(emotion, "confused") == 0 || strcmp(emotion, "embarrassed") == 0 ||
+      strcmp(emotion, "low") == 0) {
+    return ACTION_TOUCH_SOOTHE;
   }
 
   if (strcmp(emotion, "angry") == 0 || strcmp(emotion, "furious") == 0 ||
@@ -583,16 +598,12 @@ ActionType SelectTouchEmotionAction(const char *emotion) {
     return ACTION_TOUCH_RECOIL;
   }
 
-  return ACTION_TOUCH_ACK;
+  return ACTION_HOME;
 }
-} // namespace
+}  // namespace
 
 void BoardTouchAcknowledgeMotion() {
-  if (g_dog_controller == nullptr) {
-    return;
-  }
-
-  g_dog_controller->QueueActionImmediate(ACTION_TOUCH_ACK, 1, 1200, 0, 8);
+  ESP_LOGI(TAG, "BoardTouchAcknowledgeMotion called on Dog board (no-op)");
 }
 
 void BoardTouchEmotionMotion(const char *emotion) {
@@ -602,10 +613,14 @@ void BoardTouchEmotionMotion(const char *emotion) {
 
   auto action = SelectTouchEmotionAction(emotion);
   if (action == ACTION_HOME) {
+    ESP_LOGI(TAG, "BoardTouchEmotionMotion skipped on Dog board: %s",
+             emotion == nullptr ? "(null)" : emotion);
     return;
   }
 
-  g_dog_controller->QueueAction(action, 1, 1000, 0, 12);
+  ESP_LOGI(TAG, "BoardTouchEmotionMotion on Dog board: %s -> action %d",
+           emotion == nullptr ? "(null)" : emotion, action);
+  g_dog_controller->QueueActionImmediate(action, 1, 1000, 0, 12);
 }
 
 // ==================== HTTP API适配器导出函数 ====================

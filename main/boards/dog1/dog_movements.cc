@@ -4,6 +4,23 @@
 
 static const char *TAG = "DogMovements";
 
+namespace {
+
+constexpr int kDogNeutralAngle = 90;
+
+// Real-world servo direction after removing the historical pin remap:
+// - Left legs: smaller angle = forward, larger angle = backward
+// - Right legs: larger angle = forward, smaller angle = backward
+inline int LeftForward(int neutral, int amount) { return neutral - amount; }
+inline int LeftBackward(int neutral, int amount) { return neutral + amount; }
+inline int RightForward(int neutral, int amount) { return neutral + amount; }
+inline int RightBackward(int neutral, int amount) { return neutral - amount; }
+inline int CurrentLogicalPosition(Oscillator &servo, int trim) {
+  return servo.GetPosition() - trim;
+}
+
+}  // namespace
+
 // millis() 函数实现
 unsigned long IRAM_ATTR millis() {
   return (unsigned long)(esp_timer_get_time() / 1000ULL);
@@ -118,8 +135,11 @@ void Dog::MoveServos(int time, int servo_target[]) {
   }
 
   if (time > 10) {
+    int start_position[SERVO_COUNT];
     for (int i = 0; i < SERVO_COUNT; i++) {
-      increment_[i] = ((servo_target[i]) - servo_[i].GetPosition()) / (time / 10.0);
+      start_position[i] = CurrentLogicalPosition(servo_[i], servo_trim_[i]);
+      increment_[i] =
+          ((servo_target[i]) - start_position[i]) / (time / 10.0f);
     }
 
     final_time_ = esp_timer_get_time() / 1000 + time;
@@ -127,7 +147,9 @@ void Dog::MoveServos(int time, int servo_target[]) {
     for (int iteration = 1; esp_timer_get_time() / 1000 < final_time_; iteration++) {
       partial_time_ = esp_timer_get_time() / 1000 + 10;
       for (int i = 0; i < SERVO_COUNT; i++) {
-        servo_[i].SetPosition(servo_[i].GetPosition() + increment_[i]);
+        int logical_position =
+            (int)roundf(start_position[i] + increment_[i] * iteration);
+        servo_[i].SetPosition(logical_position + servo_trim_[i]);
       }
       while (esp_timer_get_time() / 1000 < partial_time_)
         ; // 等待
@@ -151,7 +173,7 @@ void Dog::MoveSingle(int position, int servo_number) {
   }
   int servo_target[SERVO_COUNT];
   for (int i = 0; i < SERVO_COUNT; i++) {
-    servo_target[i] = servo_[i].GetPosition();
+    servo_target[i] = CurrentLogicalPosition(servo_[i], servo_trim_[i]);
   }
   servo_target[servo_number] = position;
   MoveServos(200, servo_target);
@@ -218,14 +240,13 @@ void Dog::SleepPose() {
     SetRestState(false);
   }
 
-  // 目标姿态：后腿内收，前腿外趴（模拟狗狗趴下）
-  // 当前索引对应的物理腿位（兼容历史映射）：
-  // [0]=右前, [1]=右后, [2]=左后, [3]=左前
+  // Real-world "sleep" posture: all four legs sprawl toward the head side.
+  // Real indexes: [0]=LF [1]=LR [2]=RF [3]=RR
   int servo_position[SERVO_COUNT] = {
-      130, // 右前：外趴
-      130, // 右后：内收
-      50,   // 左后：内收
-      50    // 左前：外趴
+      50,  // LF forward
+      50,  // LR forward
+      130, // RF forward
+      130  // RR forward
   };
   MoveServosWithEase(600, servo_position, EASE_IN_OUT);
   DetachServos();
@@ -239,146 +260,102 @@ void Dog::SetRestState(bool state) { is_dog_resting_ = state; }
 //--------------------------------------------------------------
 //-- Dog前进动作 - 八步对角线步态
 //-- 步态说明：
-//-- 对角线组A: 右前腿(2) + 左后腿(0)
-//-- 对角线组B: 左前腿(1) + 右后腿(3)
-//-- 
-//-- 注意：左侧和右侧舵机安装方向相反
-//-- 左侧：角度增大 = 向前摆
-//-- 右侧：角度减小 = 向前摆
-//-- 
-//-- 八步循环（一个完整周期）:
-//-- 第1步: 组A（右前+左后）向前摆动
-//-- 第2步: 组B（左前+右后）向后蹬
-//-- 第3步: 组A还原到中立位
-//-- 第4步: 组B还原到中立位
-//-- 第5步: 组B（左前+右后）向前摆动
-//-- 第6步: 组A（右前+左后）向后蹬
-//-- 第7步: 组B还原到中立位
-//-- 第8步: 组A还原到中立位
+//-- 对角线组A: 左后腿 + 右前腿
+//-- 对角线组B: 左前腿 + 右后腿
+//--
+//-- 真实物理方向：
+//-- 左侧：角度减小 = 向前摆
+//-- 右侧：角度增大 = 向前摆
 //--------------------------------------------------------------
 void Dog::WalkForward(float steps, int period, int amount) {
   ESP_LOGI(TAG, "前进(八步对角线步态): steps=%.1f, period=%d, amount=%d", steps, period, amount);
-  
+
   AttachServos();
   if (GetRestState() == true) {
     SetRestState(false);
   }
-  
-  // 每步的时间（八步一个周期）
+
   int step_time = period / 8;
-  
-  // 中立位置
-  int neutral = 90;
-  
-  // 左侧腿：角度增大=向前，角度减小=向后
-  int left_forward = neutral + amount;
-  int left_backward = neutral - amount;
-  
-  // 右侧腿：角度减小=向前，角度增大=向后（镜像安装）
-  int right_forward = neutral - amount;
-  int right_backward = neutral + amount;
-  
-  // 执行指定步数
+  int neutral = kDogNeutralAngle;
+  int left_forward = LeftForward(neutral, amount);
+  int left_backward = LeftBackward(neutral, amount);
+  int right_forward = RightForward(neutral, amount);
+  int right_backward = RightBackward(neutral, amount);
+
   for (int step = 0; step < (int)steps; step++) {
-    // ========== 前四步：组A先动 ==========
-    
-    // 第1步: 对角线组A（右前+左后）向前摆动
-    // 此时组B（左前+右后）支撑
     {
       int target[SERVO_COUNT] = {
-        left_forward,   // [0] LEFT_REAR_LEG - 向前摆
-        neutral,        // [1] LEFT_FRONT_LEG - 保持支撑
-        right_forward,  // [2] RIGHT_FRONT_LEG - 向前摆
-        neutral         // [3] RIGHT_REAR_LEG - 保持支撑
+          neutral,       // 左前支撑
+          left_forward,  // 左后向前摆
+          right_forward, // 右前向前摆
+          neutral        // 右后支撑
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 第2步: 对角线组B（左前+右后）向后蹬（推进身体）
+
     {
       int target[SERVO_COUNT] = {
-        left_forward,    // [0] LEFT_REAR_LEG - 保持前方位置
-        left_backward,   // [1] LEFT_FRONT_LEG - 向后蹬
-        right_forward,   // [2] RIGHT_FRONT_LEG - 保持前方位置
-        right_backward   // [3] RIGHT_REAR_LEG - 向后蹬
+          left_backward, // 左前向后蹬
+          left_forward,  // 左后保持前方
+          right_forward, // 右前保持前方
+          right_backward // 右后向后蹬
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 第3步: 对角线组A（右前+左后）还原到中立位
+
     {
       int target[SERVO_COUNT] = {
-        neutral,         // [0] LEFT_REAR_LEG - 还原中立
-        left_backward,   // [1] LEFT_FRONT_LEG - 保持后方位置
-        neutral,         // [2] RIGHT_FRONT_LEG - 还原中立
-        right_backward   // [3] RIGHT_REAR_LEG - 保持后方位置
+          left_backward, // 左前保持后方
+          neutral,       // 左后还原
+          neutral,       // 右前还原
+          right_backward // 右后保持后方
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 第4步: 对角线组B（左前+右后）还原到中立位
+
+    {
+      int target[SERVO_COUNT] = {neutral, neutral, neutral, neutral};
+      MoveServosWithEase(step_time, target, EASE_IN_OUT);
+    }
+
     {
       int target[SERVO_COUNT] = {
-        neutral,   // [0] LEFT_REAR_LEG - 中立
-        neutral,   // [1] LEFT_FRONT_LEG - 还原中立
-        neutral,   // [2] RIGHT_FRONT_LEG - 中立
-        neutral    // [3] RIGHT_REAR_LEG - 还原中立
+          left_forward, // 左前向前摆
+          neutral,      // 左后支撑
+          neutral,      // 右前支撑
+          right_forward // 右后向前摆
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // ========== 后四步：组B先动 ==========
-    
-    // 第5步: 对角线组B（左前+右后）向前摆动
-    // 此时组A（右前+左后）支撑
+
     {
       int target[SERVO_COUNT] = {
-        neutral,        // [0] LEFT_REAR_LEG - 保持支撑
-        left_forward,   // [1] LEFT_FRONT_LEG - 向前摆
-        neutral,        // [2] RIGHT_FRONT_LEG - 保持支撑
-        right_forward   // [3] RIGHT_REAR_LEG - 向前摆
+          left_forward,  // 左前保持前方
+          left_backward, // 左后向后蹬
+          right_backward, // 右前向后蹬
+          right_forward  // 右后保持前方
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 第6步: 对角线组A（右前+左后）向后蹬（推进身体）
+
     {
       int target[SERVO_COUNT] = {
-        left_backward,   // [0] LEFT_REAR_LEG - 向后蹬
-        left_forward,    // [1] LEFT_FRONT_LEG - 保持前方位置
-        right_backward,  // [2] RIGHT_FRONT_LEG - 向后蹬
-        right_forward    // [3] RIGHT_REAR_LEG - 保持前方位置
+          neutral,       // 左前还原
+          left_backward, // 左后保持后方
+          right_backward, // 右前保持后方
+          neutral        // 右后还原
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 第7步: 对角线组B（左前+右后）还原到中立位
+
     {
-      int target[SERVO_COUNT] = {
-        left_backward,   // [0] LEFT_REAR_LEG - 保持后方位置
-        neutral,         // [1] LEFT_FRONT_LEG - 还原中立
-        right_backward,  // [2] RIGHT_FRONT_LEG - 保持后方位置
-        neutral          // [3] RIGHT_REAR_LEG - 还原中立
-      };
+      int target[SERVO_COUNT] = {neutral, neutral, neutral, neutral};
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 第8步: 对角线组A（右前+左后）还原到中立位
-    // 完成一个完整步态周期
-    {
-      int target[SERVO_COUNT] = {
-        neutral,   // [0] LEFT_REAR_LEG - 还原中立
-        neutral,   // [1] LEFT_FRONT_LEG - 中立
-        neutral,   // [2] RIGHT_FRONT_LEG - 还原中立
-        neutral    // [3] RIGHT_REAR_LEG - 中立
-      };
-      MoveServosWithEase(step_time, target, EASE_IN_OUT);
-    }
-    
-    // 添加延迟避免看门狗超时
+
     vTaskDelay(pdMS_TO_TICKS(10));
   }
-  
+
   // 注意: Home()由controller统一调用,这里不调用
 }
 
@@ -391,121 +368,84 @@ void Dog::WalkBackward(float steps, int period, int amount) {
     SetRestState(false);
   }
   
-  // 每步的时间（八步一个周期）
   int step_time = period / 8;
+  int neutral = kDogNeutralAngle;
+  int left_forward = LeftForward(neutral, amount);
+  int left_backward = LeftBackward(neutral, amount);
+  int right_forward = RightForward(neutral, amount);
+  int right_backward = RightBackward(neutral, amount);
   
-  // 中立位置
-  int neutral = 90;
-  
-  // 左侧腿：角度增大=向前，角度减小=向后
-  int left_forward = neutral + amount;
-  int left_backward = neutral - amount;
-  
-  // 右侧腿：角度减小=向前，角度增大=向后（镜像安装）
-  int right_forward = neutral - amount;
-  int right_backward = neutral + amount;
-  
-  // 执行指定步数
   for (int step = 0; step < (int)steps; step++) {
-    // ========== 严格按照前进的逆序：8→7→6→5→4→3→2→1 ==========
-    
-    // 前进第8步的状态: neutral, neutral, neutral, neutral
-    // 后退第1步(逆8): 从第7步的状态倒回去
     {
       int target[SERVO_COUNT] = {
-        left_backward,   // [0] LEFT_REAR_LEG - 保持后方位置
-        neutral,         // [1] LEFT_FRONT_LEG - 还原中立
-        right_backward,  // [2] RIGHT_FRONT_LEG - 保持后方位置
-        neutral          // [3] RIGHT_REAR_LEG - 还原中立
+          neutral,        // 左前支撑
+          left_backward,  // 左后向后摆
+          right_backward, // 右前向后摆
+          neutral         // 右后支撑
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 前进第7步的状态: left_backward, neutral, right_backward, neutral
-    // 后退第2步(逆7): 从第6步的状态倒回去
+
     {
       int target[SERVO_COUNT] = {
-        left_backward,   // [0] LEFT_REAR_LEG - 向后蹬
-        left_forward,    // [1] LEFT_FRONT_LEG - 保持前方位置
-        right_backward,  // [2] RIGHT_FRONT_LEG - 向后蹬
-        right_forward    // [3] RIGHT_REAR_LEG - 保持前方位置
+          left_forward,  // 左前向前蹬
+          left_backward, // 左后保持后方
+          right_backward, // 右前保持后方
+          right_forward  // 右后向前蹬
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 前进第6步的状态: left_backward, left_forward, right_backward, right_forward
-    // 后退第3步(逆6): 从第5步的状态倒回去
+
     {
       int target[SERVO_COUNT] = {
-        neutral,        // [0] LEFT_REAR_LEG - 保持支撑
-        left_forward,   // [1] LEFT_FRONT_LEG - 向前摆
-        neutral,        // [2] RIGHT_FRONT_LEG - 保持支撑
-        right_forward   // [3] RIGHT_REAR_LEG - 向前摆
+          left_forward,  // 左前保持前方
+          neutral,       // 左后还原
+          neutral,       // 右前还原
+          right_forward  // 右后保持前方
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 前进第5步的状态: neutral, left_forward, neutral, right_forward
-    // 后退第4步(逆5): 从第4步的状态倒回去
+
+    {
+      int target[SERVO_COUNT] = {neutral, neutral, neutral, neutral};
+      MoveServosWithEase(step_time, target, EASE_IN_OUT);
+    }
+
     {
       int target[SERVO_COUNT] = {
-        neutral,   // [0] LEFT_REAR_LEG - 中立
-        neutral,   // [1] LEFT_FRONT_LEG - 还原中立
-        neutral,   // [2] RIGHT_FRONT_LEG - 中立
-        neutral    // [3] RIGHT_REAR_LEG - 还原中立
+          left_backward, // 左前向后摆
+          neutral,       // 左后支撑
+          neutral,       // 右前支撑
+          right_backward // 右后向后摆
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 前进第4步的状态: neutral, neutral, neutral, neutral
-    // 后退第5步(逆4): 从第3步的状态倒回去
+
     {
       int target[SERVO_COUNT] = {
-        neutral,         // [0] LEFT_REAR_LEG - 还原中立
-        left_backward,   // [1] LEFT_FRONT_LEG - 保持后方位置
-        neutral,         // [2] RIGHT_FRONT_LEG - 还原中立
-        right_backward   // [3] RIGHT_REAR_LEG - 保持后方位置
+          left_backward, // 左前保持后方
+          left_forward,  // 左后向前蹬
+          right_forward, // 右前向前蹬
+          right_backward // 右后保持后方
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 前进第3步的状态: neutral, left_backward, neutral, right_backward
-    // 后退第6步(逆3): 从第2步的状态倒回去
+
     {
       int target[SERVO_COUNT] = {
-        left_forward,    // [0] LEFT_REAR_LEG - 保持前方位置
-        left_backward,   // [1] LEFT_FRONT_LEG - 向后蹬
-        right_forward,   // [2] RIGHT_FRONT_LEG - 保持前方位置
-        right_backward   // [3] RIGHT_REAR_LEG - 向后蹬
+          neutral,      // 左前还原
+          left_forward, // 左后保持前方
+          right_forward, // 右前保持前方
+          neutral       // 右后还原
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 前进第2步的状态: left_forward, left_backward, right_forward, right_backward
-    // 后退第7步(逆2): 从第1步的状态倒回去
+
     {
-      int target[SERVO_COUNT] = {
-        left_forward,   // [0] LEFT_REAR_LEG - 向前摆
-        neutral,        // [1] LEFT_FRONT_LEG - 保持支撑
-        right_forward,  // [2] RIGHT_FRONT_LEG - 向前摆
-        neutral         // [3] RIGHT_REAR_LEG - 保持支撑
-      };
+      int target[SERVO_COUNT] = {neutral, neutral, neutral, neutral};
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 前进第1步的状态: left_forward, neutral, right_forward, neutral
-    // 后退第8步(逆1): 还原到中立，完成一个周期
-    {
-      int target[SERVO_COUNT] = {
-        neutral,   // [0] LEFT_REAR_LEG - 还原中立
-        neutral,   // [1] LEFT_FRONT_LEG - 中立
-        neutral,   // [2] RIGHT_FRONT_LEG - 还原中立
-        neutral    // [3] RIGHT_REAR_LEG - 中立
-      };
-      MoveServosWithEase(step_time, target, EASE_IN_OUT);
-    }
-    
-    // 添加延迟避免看门狗超时
+
     vTaskDelay(pdMS_TO_TICKS(10));
   }
   
@@ -524,28 +464,24 @@ void Dog::SwayBackForth(int steps, int period, int amount) {
   }
 
   int half_time = period / 2;
-  int neutral = 90;
-
-  // 左侧腿：角度增大=向前，角度减小=向后
-  int left_forward = neutral + amount;
-  int left_backward = neutral - amount;
-
-  // 右侧腿：角度减小=向前，角度增大=向后（镜像安装）
-  int right_forward = neutral - amount;
-  int right_backward = neutral + amount;
+  int neutral = kDogNeutralAngle;
+  int left_forward = LeftForward(neutral, amount);
+  int left_backward = LeftBackward(neutral, amount);
+  int right_forward = RightForward(neutral, amount);
+  int right_backward = RightBackward(neutral, amount);
 
   for (int i = 0; i < steps; i++) {
     int target_back[SERVO_COUNT] = {
-      left_backward,  // 左后腿
       left_backward,  // 左前腿
+      left_backward,  // 左后腿
       right_backward, // 右前腿
       right_backward  // 右后腿
     };
     MoveServosWithEase(half_time, target_back, EASE_IN_OUT);
 
     int target_forward[SERVO_COUNT] = {
-      left_forward,  // 左后腿
       left_forward,  // 左前腿
+      left_forward,  // 左后腿
       right_forward, // 右前腿
       right_forward  // 右后腿
     };
@@ -569,22 +505,19 @@ void Dog::PushUp(int steps, int period, int amount) {
   }
 
   int half_time = period / 2;
-  int neutral = 90;
+  int neutral = kDogNeutralAngle;
 
   int push_amount = amount * 2;
 
-  // 左侧腿：角度增大=向前，角度减小=向后
-  int left_forward = neutral + push_amount;
-
-  // 右侧腿：角度减小=向前，角度增大=向后（镜像安装）
-  int right_forward = neutral - push_amount;
+  int left_forward = LeftForward(neutral, push_amount);
+  int right_forward = RightForward(neutral, push_amount);
 
   for (int i = 0; i < steps; i++) {
     int target_forward[SERVO_COUNT] = {
       left_forward,  // 左前腿向前
       neutral,       // 左后腿保持中立
-      neutral,       // 右后腿保持中立
-      right_forward  // 右前腿向前
+      right_forward, // 右前腿向前
+      neutral        // 右后腿保持中立
     };
     MoveServosWithEase(half_time, target_forward, EASE_IN_OUT);
 
@@ -613,69 +546,49 @@ void Dog::TurnRight(float steps, int period, int amount) {
     SetRestState(false);
   }
   
-  // 每步的时间（四步一个周期）
   int step_time = period / 4;
+  int neutral = kDogNeutralAngle;
+  int left_forward = LeftForward(neutral, amount);
+  int left_backward = LeftBackward(neutral, amount);
+  int right_forward = RightForward(neutral, amount);
+  int right_backward = RightBackward(neutral, amount);
   
-  // 中立位置
-  int neutral = 90;
-  
-  // 左侧腿：角度增大=向前，角度减小=向后
-  int left_forward = neutral + amount;
-  int left_backward = neutral - amount;
-  
-  // 右侧腿：角度减小=向前，角度增大=向后（镜像安装）
-  int right_forward = neutral - amount;
-  int right_backward = neutral + amount;
-  
-  // 执行指定步数
   for (int step = 0; step < (int)steps; step++) {
-    // ========== 逆序执行：从第4步到第1步 ==========
-    
-    // 第4步(逆): 组B准备（右后往前 + 左前往后）
     {
       int target[SERVO_COUNT] = {
-        neutral,         // [0] LEFT_REAR_LEG - 中立
-        left_backward,   // [1] LEFT_FRONT_LEG - 往后
-        neutral,         // [2] RIGHT_FRONT_LEG - 中立
-        right_forward    // [3] RIGHT_REAR_LEG - 往前
+          left_forward, // 左前向前
+          neutral,      // 左后支撑
+          neutral,      // 右前支撑
+          right_backward // 右后向后
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 第3步(逆): 组A准备（右前往后 + 左后往前）
+
     {
       int target[SERVO_COUNT] = {
-        left_forward,    // [0] LEFT_REAR_LEG - 往前
-        left_backward,   // [1] LEFT_FRONT_LEG - 保持后方
-        right_backward,  // [2] RIGHT_FRONT_LEG - 往后
-        right_forward    // [3] RIGHT_REAR_LEG - 保持前方
+          left_forward,  // 左前保持前方
+          left_backward, // 左后向后
+          right_forward, // 右前向前
+          right_backward // 右后保持后方
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 第2步(逆): 组B还原中立
+
     {
       int target[SERVO_COUNT] = {
-        left_forward,    // [0] LEFT_REAR_LEG - 保持前方
-        neutral,         // [1] LEFT_FRONT_LEG - 还原中立
-        right_backward,  // [2] RIGHT_FRONT_LEG - 保持后方
-        neutral          // [3] RIGHT_REAR_LEG - 还原中立
+          neutral,      // 左前还原
+          left_backward, // 左后保持后方
+          right_forward, // 右前保持前方
+          neutral        // 右后还原
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 第1步(逆): 组A还原中立，完成一个周期
+
     {
-      int target[SERVO_COUNT] = {
-        neutral,   // [0] LEFT_REAR_LEG - 还原中立
-        neutral,   // [1] LEFT_FRONT_LEG - 中立
-        neutral,   // [2] RIGHT_FRONT_LEG - 还原中立
-        neutral    // [3] RIGHT_REAR_LEG - 中立
-      };
+      int target[SERVO_COUNT] = {neutral, neutral, neutral, neutral};
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 添加延迟避免看门狗超时
+
     vTaskDelay(pdMS_TO_TICKS(10));
   }
   
@@ -685,14 +598,14 @@ void Dog::TurnRight(float steps, int period, int amount) {
 //--------------------------------------------------------------
 //-- Dog左转动作 - 四步对角线步态
 //-- 步态说明：
-//-- 对角线组A: 右前腿(2) + 左后腿(0)
-//-- 对角线组B: 左前腿(1) + 右后腿(3)
-//-- 
+//-- 对角线组A: 左后腿 + 右前腿
+//-- 对角线组B: 左前腿 + 右后腿
+//--
 //-- 左转产生逆时针力矩：
-//-- 第1步: 右前往后 + 左后往前（组A产生力矩）
-//-- 第2步: 右后往前 + 左前往后（组B产生力矩）
-//-- 第3步: 右前和左后还原中立
-//-- 第4步: 右后和左前还原中立
+//-- 第1步: 左后往后 + 右前往前（组A产生力矩）
+//-- 第2步: 左前往前 + 右后往后（组B产生力矩）
+//-- 第3步: 左前和右后保持
+//-- 第4步: 全部回中立
 //--------------------------------------------------------------
 void Dog::TurnLeft(float steps, int period, int amount) {
   ESP_LOGI(TAG, "左转(四步对角线步态): steps=%.1f, period=%d, amount=%d", steps, period, amount);
@@ -702,71 +615,49 @@ void Dog::TurnLeft(float steps, int period, int amount) {
     SetRestState(false);
   }
   
-  // 每步的时间（四步一个周期）
   int step_time = period / 4;
+  int neutral = kDogNeutralAngle;
+  int left_forward = LeftForward(neutral, amount);
+  int left_backward = LeftBackward(neutral, amount);
+  int right_forward = RightForward(neutral, amount);
+  int right_backward = RightBackward(neutral, amount);
   
-  // 中立位置
-  int neutral = 90;
-  
-  // 左侧腿：角度增大=向前，角度减小=向后
-  int left_forward = neutral + amount;
-  int left_backward = neutral - amount;
-  
-  // 右侧腿：角度减小=向前，角度增大=向后（镜像安装）
-  int right_forward = neutral - amount;
-  int right_backward = neutral + amount;
-  
-  // 执行指定步数
   for (int step = 0; step < (int)steps; step++) {
-    // 第1步: 右前往后 + 左后往前（组A产生力矩）
-    // 此时组B（左前+右后）支撑
     {
       int target[SERVO_COUNT] = {
-        left_forward,    // [0] LEFT_REAR_LEG - 往前
-        neutral,         // [1] LEFT_FRONT_LEG - 支撑
-        right_backward,  // [2] RIGHT_FRONT_LEG - 往后
-        neutral          // [3] RIGHT_REAR_LEG - 支撑
+          neutral,       // 左前支撑
+          left_backward, // 左后向后
+          right_forward, // 右前向前
+          neutral        // 右后支撑
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 第2步: 右后往前 + 左前往后（组B产生力矩）
-    // 此时组A（右前+左后）支撑
+
     {
       int target[SERVO_COUNT] = {
-        left_forward,    // [0] LEFT_REAR_LEG - 保持前方
-        left_backward,   // [1] LEFT_FRONT_LEG - 往后
-        right_backward,  // [2] RIGHT_FRONT_LEG - 保持后方
-        right_forward    // [3] RIGHT_REAR_LEG - 往前
+          left_forward,  // 左前向前
+          left_backward, // 左后保持后方
+          right_forward, // 右前保持前方
+          right_backward // 右后向后
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 第3步: 右前和左后还原中立
-    // 现在组A支撑
+
     {
       int target[SERVO_COUNT] = {
-        neutral,         // [0] LEFT_REAR_LEG - 还原中立
-        left_backward,   // [1] LEFT_FRONT_LEG - 保持后方
-        neutral,         // [2] RIGHT_FRONT_LEG - 还原中立
-        right_forward    // [3] RIGHT_REAR_LEG - 保持前方
+          left_forward,  // 左前保持前方
+          neutral,       // 左后还原
+          neutral,       // 右前还原
+          right_backward // 右后保持后方
       };
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 第4步: 右后和左前还原中立
-    // 完成一个周期
+
     {
-      int target[SERVO_COUNT] = {
-        neutral,   // [0] LEFT_REAR_LEG - 中立
-        neutral,   // [1] LEFT_FRONT_LEG - 还原中立
-        neutral,   // [2] RIGHT_FRONT_LEG - 中立
-        neutral    // [3] RIGHT_REAR_LEG - 还原中立
-      };
+      int target[SERVO_COUNT] = {neutral, neutral, neutral, neutral};
       MoveServosWithEase(step_time, target, EASE_IN_OUT);
     }
-    
-    // 添加延迟避免看门狗超时
+
     vTaskDelay(pdMS_TO_TICKS(10));
   }
   
@@ -777,8 +668,8 @@ void Dog::TurnLeft(float steps, int period, int amount) {
 //-- Dog打招呼动作 - 模仿小狗招手
 //-- 步态说明：
 //-- 1. 后两腿同时向前（模拟坐下）
-//-- 2. 左前脚来回摆动（招手）
-//-- 3. 左前脚回中立
+//-- 2. 右前脚来回摆动（保持原始物理效果）
+//-- 3. 右前脚回中立
 //-- 4. 后两腿回中立
 //--------------------------------------------------------------
 void Dog::SayHello(int wave_times, int period, int amount) {
@@ -789,66 +680,64 @@ void Dog::SayHello(int wave_times, int period, int amount) {
     SetRestState(false);
   }
 
-  // --- 可调角度（单位：度）---
-  // 方向说明（基于当前舵机安装方向）：
-  // - 左侧：角度增大 = 腿向前摆（朝头部方向）
-  // - 右侧：角度减小 = 腿向前摆（朝头部方向）
-  // - 坐下：后腿向前摆，身体降低
-  // - 招手：左前腿前后摆动
-  const int neutral = 90;
+  // Real-world direction:
+  // - Left legs: smaller angle = forward
+  // - Right legs: larger angle = forward
+  // This keeps the original physical effect: sit with both rear legs,
+  // then wave the right front paw.
+  const int neutral = kDogNeutralAngle;
   const int sit_amount = amount * 2;   // sit depth
   const int wave_amount = amount * 2;  // wave amplitude
 
-  const int left_rear_sit = neutral + sit_amount;
-  const int right_rear_sit = neutral - sit_amount;
-  const int wave_forward = neutral + wave_amount;
-  const int wave_back = neutral + amount;
+  const int left_rear_sit = LeftForward(neutral, sit_amount);
+  const int right_rear_sit = RightForward(neutral, sit_amount);
+  const int wave_forward = RightForward(neutral, wave_amount);
+  const int wave_back = RightForward(neutral, amount);
 
   auto move = [this](int duration_ms, const int target[SERVO_COUNT]) {
     MoveServosWithEase(duration_ms, const_cast<int*>(target), EASE_IN_OUT);
   };
 
   // 第1步：坐下（后腿向前摆，身体降低）
-  // [0] 左前腿, [1] 左后腿, [2] 右后腿, [3] 右前腿
   {
     const int target[SERVO_COUNT] = {
         neutral,       // 左前腿：保持
         left_rear_sit, // 左后腿：向前（坐下）
-        right_rear_sit,// 右后腿：向前（坐下）
-        neutral        // 右前腿：保持
+        neutral,       // 右前腿：保持
+        right_rear_sit // 右后腿：向前（坐下）
     };
     move(500, target);
   }
 
   vTaskDelay(pdMS_TO_TICKS(200));
 
-  // 第2步：左前腿招手（其他腿保持坐下）
+  // 第2步：右前腿招手（其他腿保持坐下）
   for (int i = 0; i < wave_times; i++) {
     const int target_up[SERVO_COUNT] = {
-        wave_forward,  // 左前腿：向前（抬起）
+        neutral,       // 左前腿：保持
         left_rear_sit, // 左后腿：保持坐下
-        right_rear_sit,// 右后腿：保持坐下
-        neutral        // 右前腿：保持
+        wave_forward,  // 右前腿：向前（抬起）
+        right_rear_sit // 右后腿：保持坐下
     };
     move(period / 2, target_up);
 
     const int target_down[SERVO_COUNT] = {
-        wave_back,     // 左前腿：回一点（放下）
+        neutral,       // 左前腿：保持
         left_rear_sit, // 左后腿：保持坐下
-        right_rear_sit,// 右后腿：保持坐下
-        neutral        // 右前腿：保持
+        wave_back,     // 右前腿：回一点（放下）
+        right_rear_sit // 右后腿：保持坐下
     };
     move(period / 2, target_down);
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 
-  // 第3步：左前腿回中立（结束招手）
+  // 第3步：右前腿回中立（结束招手）
   {
     const int target[SERVO_COUNT] = {
         neutral,       // 左前腿：中立
         left_rear_sit, // 左后腿：保持坐下
-        right_rear_sit,// 右后腿：保持坐下
-        neutral        // 右前腿：保持
+        neutral,       // 右前腿：中立
+        right_rear_sit // 右后腿：保持坐下
     };
     move(300, target);
   }
@@ -860,8 +749,8 @@ void Dog::SayHello(int wave_times, int period, int amount) {
     const int target[SERVO_COUNT] = {
         neutral, // 左前腿：中立
         neutral, // 左后腿：中立
-        neutral, // 右后腿：中立
-        neutral  // 右前腿：中立
+        neutral, // 右前腿：中立
+        neutral  // 右后腿：中立
     };
     move(500, target);
   }
@@ -880,28 +769,28 @@ void Dog::CuriousLean(int period, int amount) {
     SetRestState(false);
   }
 
-  const int neutral = 90;
+  const int neutral = kDogNeutralAngle;
   const int rear_anchor = amount > 6 ? amount - 4 : amount;
   const int pulse_extra = 4;
 
   // 当前真实物理腿位:
-  // [0]=右前, [1]=右后, [2]=左后, [3]=左前
-  // 右侧腿角度减小=向前，左侧腿角度增大=向前
+  // [0]=左前, [1]=左后, [2]=右前, [3]=右后
+  // 左侧腿角度减小=向前，右侧腿角度增大=向前
   const int lean_target[SERVO_COUNT] = {
-      neutral - amount,       // 右前向前
-      neutral + rear_anchor,  // 右后向后支撑
-      neutral - rear_anchor,  // 左后向后支撑
-      neutral + amount        // 左前向前
+      LeftForward(neutral, amount),        // 左前向前
+      LeftBackward(neutral, rear_anchor),  // 左后向后支撑
+      RightForward(neutral, amount),       // 右前向前
+      RightBackward(neutral, rear_anchor)  // 右后向后支撑
   };
   MoveServosWithEase(period * 2 / 5, const_cast<int *>(lean_target), EASE_OUT);
 
   vTaskDelay(pdMS_TO_TICKS(90));
 
   const int sniff_target[SERVO_COUNT] = {
-      neutral - (amount + pulse_extra), // 右前再前探一点
-      neutral + rear_anchor + 2,        // 右后微微后撑
-      neutral - rear_anchor - 2,        // 左后微微后撑
-      neutral + (amount + pulse_extra)  // 左前再前探一点
+      LeftForward(neutral, amount + pulse_extra),   // 左前再前探一点
+      LeftBackward(neutral, rear_anchor + 2),       // 左后微微后撑
+      RightForward(neutral, amount + pulse_extra),  // 右前再前探一点
+      RightBackward(neutral, rear_anchor + 2)       // 右后微微后撑
   };
   MoveServosWithEase(period / 5, const_cast<int *>(sniff_target), EASE_IN_OUT);
   MoveServosWithEase(period / 5, const_cast<int *>(lean_target), EASE_IN_OUT);
@@ -918,26 +807,92 @@ void Dog::FlinchBack(int period, int amount) {
     SetRestState(false);
   }
 
-  const int neutral = 90;
+  const int neutral = kDogNeutralAngle;
   const int rear_tuck = amount > 6 ? amount - 4 : amount;
 
   const int recoil_target[SERVO_COUNT] = {
-      neutral + amount,     // 右前向后缩
-      neutral - rear_tuck,  // 右后向前收
-      neutral + rear_tuck,  // 左后向前收
-      neutral - amount      // 左前向后缩
+      LeftBackward(neutral, amount),   // 左前向后缩
+      LeftForward(neutral, rear_tuck), // 左后向前收
+      RightBackward(neutral, amount),  // 右前向后缩
+      RightForward(neutral, rear_tuck) // 右后向前收
   };
   MoveServosWithEase(period / 3, const_cast<int *>(recoil_target), EASE_OUT);
 
   vTaskDelay(pdMS_TO_TICKS(80));
 
   const int settle_target[SERVO_COUNT] = {
-      neutral + amount / 2,    // 右前半收
-      neutral - rear_tuck / 2, // 右后半收
-      neutral + rear_tuck / 2, // 左后半收
-      neutral - amount / 2     // 左前半收
+      LeftBackward(neutral, amount / 2),   // 左前半收
+      LeftForward(neutral, rear_tuck / 2), // 左后半收
+      RightBackward(neutral, amount / 2),  // 右前半收
+      RightForward(neutral, rear_tuck / 2) // 右后半收
   };
   MoveServosWithEase(period / 2, const_cast<int *>(settle_target), EASE_IN_OUT);
+}
+
+//--------------------------------------------------------------
+//-- Dog开心前趴 - 四条腿一起慢慢往后收，模仿邀玩姿态
+//--------------------------------------------------------------
+void Dog::PlayBow(int period, int amount) {
+  ESP_LOGI(TAG, "开心前趴: period=%d, amount=%d", period, amount);
+
+  AttachServos();
+  if (GetRestState() == true) {
+    SetRestState(false);
+  }
+
+  const int neutral = kDogNeutralAngle;
+  const int bow_target[SERVO_COUNT] = {
+      LeftBackward(neutral, amount),  // 左前往后收
+      LeftBackward(neutral, amount),  // 左后往后收
+      RightBackward(neutral, amount), // 右前往后收
+      RightBackward(neutral, amount)  // 右后往后收
+  };
+  int home_target[SERVO_COUNT] = {neutral, neutral, neutral, neutral};
+
+  MoveServosWithEase(period * 4 / 5, const_cast<int *>(bow_target), EASE_IN_OUT);
+  vTaskDelay(pdMS_TO_TICKS(420));
+  MoveServosWithEase(period / 3, home_target, EASE_IN_OUT);
+}
+
+//--------------------------------------------------------------
+//-- Dog惊讶蓄力 - 前腿先快速内收，再带后腿跟进，最后快速复位
+//--------------------------------------------------------------
+void Dog::SurpriseJumpPrep(int period, int front_amount, int rear_amount) {
+  ESP_LOGI(TAG,
+           "惊讶蓄力: period=%d, front_amount=%d, rear_amount=%d", period,
+           front_amount, rear_amount);
+
+  AttachServos();
+  if (GetRestState() == true) {
+    SetRestState(false);
+  }
+
+  const int neutral = kDogNeutralAngle;
+  const int safe_front_amount = front_amount > 82 ? 82 : front_amount;
+  const int safe_rear_amount = rear_amount > 28 ? 28 : rear_amount;
+
+  const int front_tuck[SERVO_COUNT] = {
+      LeftBackward(neutral, safe_front_amount), // 左前往里收到接近180
+      neutral,                                  // 左后先不动
+      RightBackward(neutral, safe_front_amount), // 右前往里收到接近0
+      neutral                                    // 右后先不动
+  };
+  MoveServosWithEase(period * 2 / 5, const_cast<int *>(front_tuck), EASE_IN);
+
+  vTaskDelay(pdMS_TO_TICKS(50));
+
+  const int full_tuck[SERVO_COUNT] = {
+      LeftBackward(neutral, safe_front_amount), // 左前保持内收
+      LeftBackward(neutral, safe_rear_amount),  // 左后小幅后收
+      RightBackward(neutral, safe_front_amount), // 右前保持内收
+      RightBackward(neutral, safe_rear_amount)   // 右后小幅后收
+  };
+  MoveServosWithEase(period / 4, const_cast<int *>(full_tuck), EASE_IN);
+
+  vTaskDelay(pdMS_TO_TICKS(35));
+
+  int reset_target[SERVO_COUNT] = {neutral, neutral, neutral, neutral};
+  MoveServosWithEase(period / 5, reset_target, EASE_OUT);
 }
 
 //--------------------------------------------------------------
@@ -953,7 +908,7 @@ void Dog::MoveServosWithEase(int time, int servo_target[], EaseType ease_type) {
     bool need_move[SERVO_COUNT];  // 标记哪些舵机需要移动
     
     for (int i = 0; i < SERVO_COUNT; i++) {
-      start_position[i] = servo_[i].GetPosition();
+      start_position[i] = CurrentLogicalPosition(servo_[i], servo_trim_[i]);
       // 计算是否需要移动：如果起始位置和目标位置差异很小（<5度），则不需要移动
       // 舵机读取误差可能达到±2-3度，用5度阈值确保静止的腿不会抖动
       int delta = abs(servo_target[i] - start_position[i]);
@@ -1003,7 +958,8 @@ void Dog::MoveServoPath(int servo_index, BezierWaypoint waypoints[], int count) 
     SetRestState(false);
   }
 
-  int current_position = servo_[servo_index].GetPosition();
+  int current_position =
+      CurrentLogicalPosition(servo_[servo_index], servo_trim_[servo_index]);
 
   for (int wp = 0; wp < count; wp++) {
     int target_position = waypoints[wp].position;

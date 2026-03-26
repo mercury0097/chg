@@ -1095,8 +1095,7 @@ void Application::PlaySound(const std::string_view &sound) {
 }
 
 void Application::OnTouchDetected() {
-  ESP_LOGI(TAG, "Touch detected! Starting tactile acknowledgement and sending "
-                "context to AI");
+  ESP_LOGI(TAG, "Touch detected! Sending touch context to AI");
 
   BoardTouchAcknowledgeMotion();
 
@@ -1297,7 +1296,7 @@ void Application::MaybeRunTouchEmotionMotion(const std::string &emotion) {
     return;
   }
 
-  ESP_LOGI(TAG, "Touch: running emotion follow-up motion for '%s'",
+  ESP_LOGI(TAG, "Touch: notifying board touch emotion hook for '%s'",
            emotion.c_str());
   BoardTouchEmotionMotion(emotion.c_str());
   ClearTouchEmotionFollowup();

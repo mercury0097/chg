@@ -22,10 +22,13 @@
 #define SERVO_LIMIT_DEFAULT 240
 
 // -- Servo indexes for easy access (四足小狗)
-#define LEFT_FRONT_LEG 0  // 左前腿 - GPIO 39
-#define LEFT_REAR_LEG 1   // 左后腿 - GPIO 38
-#define RIGHT_FRONT_LEG 2 // 右前腿 - GPIO 17
-#define RIGHT_REAR_LEG 3  // 右后腿 - GPIO 18
+// 真实索引顺序:
+// [0]=左前腿(IO18) [1]=左后腿(IO17) [2]=右前腿(IO39) [3]=右后腿(IO38)
+// Direction notes live in DOG_SERVO_PHYSICAL_MAPPING.md.
+#define LEFT_FRONT_LEG 0
+#define LEFT_REAR_LEG 1
+#define RIGHT_FRONT_LEG 2
+#define RIGHT_REAR_LEG 3
 #define SERVO_COUNT 4
 
 // 预定义的运动曲线类型
@@ -148,6 +151,22 @@ public:
    * @param amount 后缩幅度
    */
   void FlinchBack(int period = 420, int amount = 14);
+
+  /**
+   * 开心前趴 - 四条腿一起缓慢向后收，模仿邀请玩耍的前趴
+   * @param period 动作周期（毫秒）
+   * @param amount 后收幅度
+   */
+  void PlayBow(int period = 1100, int amount = 12);
+
+  /**
+   * 惊讶蓄力 - 先前腿内收，再后腿跟进，最后快速复位
+   * @param period 动作周期（毫秒）
+   * @param front_amount 前腿内收幅度
+   * @param rear_amount 后腿内收幅度
+   */
+  void SurpriseJumpPrep(int period = 520, int front_amount = 78,
+                        int rear_amount = 22);
 
   // -- 贝塞尔曲线轨迹运动（更平滑）
   void MoveServosWithEase(int time, int servo_target[], EaseType ease_type);

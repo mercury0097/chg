@@ -725,66 +725,13 @@ void OttoJump(int steps, int speed) {
   PalqiqiJump(steps, speed);
 }
 
-namespace {
-PalqiqiController::ActionType SelectTouchEmotionAction(const char *emotion) {
-  if (emotion == nullptr || strcmp(emotion, "neutral") == 0) {
-    return PalqiqiController::ACTION_HOME;
-  }
-
-  if (strcmp(emotion, "happy") == 0 || strcmp(emotion, "laughing") == 0 ||
-      strcmp(emotion, "funny") == 0 || strcmp(emotion, "loving") == 0 ||
-      strcmp(emotion, "confident") == 0 || strcmp(emotion, "winking") == 0 ||
-      strcmp(emotion, "cool") == 0 || strcmp(emotion, "delicious") == 0 ||
-      strcmp(emotion, "kissy") == 0 || strcmp(emotion, "silly") == 0 ||
-      strcmp(emotion, "glee") == 0 || strcmp(emotion, "awe") == 0) {
-    return PalqiqiController::ACTION_TOUCH_WARM;
-  }
-
-  if (strcmp(emotion, "sad") == 0 || strcmp(emotion, "crying") == 0 ||
-      strcmp(emotion, "sleepy") == 0) {
-    return PalqiqiController::ACTION_TOUCH_SOOTHE;
-  }
-
-  if (strcmp(emotion, "surprised") == 0) {
-    return PalqiqiController::ACTION_TOUCH_ALERT;
-  }
-
-  if (strcmp(emotion, "angry") == 0 || strcmp(emotion, "furious") == 0 ||
-      strcmp(emotion, "annoyed") == 0 || strcmp(emotion, "frustrated") == 0 ||
-      strcmp(emotion, "suspicious") == 0 || strcmp(emotion, "scared") == 0 ||
-      strcmp(emotion, "worried") == 0) {
-    return PalqiqiController::ACTION_TOUCH_RECOIL;
-  }
-
-  return PalqiqiController::ACTION_TOUCH_ACK;
-}
-} // namespace
-
 void BoardTouchAcknowledgeMotion() {
-  if (g_palqiqi_controller == nullptr) {
-    return;
-  }
-
-  g_palqiqi_controller->QueueActionImmediate(
-      PalqiqiController::ACTION_TOUCH_ACK, 1, 950, 0, 8);
+  ESP_LOGI(TAG, "BoardTouchAcknowledgeMotion called on Palqiqi board (no-op)");
 }
 
 void BoardTouchEmotionMotion(const char *emotion) {
-  if (g_palqiqi_controller == nullptr) {
-    return;
-  }
-
-  auto action = SelectTouchEmotionAction(emotion);
-  if (action == PalqiqiController::ACTION_HOME) {
-    return;
-  }
-
-  int direction = RIGHT;
-  if (strcmp(emotion, "scared") == 0 || strcmp(emotion, "worried") == 0) {
-    direction = LEFT;
-  }
-
-  g_palqiqi_controller->QueueAction(action, 1, 1000, direction, 10);
+  ESP_LOGI(TAG, "BoardTouchEmotionMotion called on Palqiqi board (no-op): %s",
+           emotion == nullptr ? "(null)" : emotion);
 }
 
 // ==================== HTTP API适配器导出函数 ====================
