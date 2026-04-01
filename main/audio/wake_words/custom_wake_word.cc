@@ -144,11 +144,15 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
     }
 
     esp_mn_state_t mn_state;
-    // If input channels is 2, we need to fetch the left channel data
-    if (codec_->input_channels() == 2) {
-        auto mono_data = std::vector<int16_t>(data.size() / 2);
-        for (size_t i = 0, j = 0; i < mono_data.size(); ++i, j += 2) {
-            mono_data[i] = data[j];
+    if (codec_->input_channels() > 1) {
+        auto mono_data = std::vector<int16_t>(data.size() / codec_->input_channels());
+        for (size_t frame = 0, index = 0; frame < mono_data.size();
+             ++frame, index += codec_->input_channels()) {
+            int32_t sample_sum = 0;
+            for (int channel = 0; channel < codec_->microphone_channels(); ++channel) {
+                sample_sum += data[index + channel];
+            }
+            mono_data[frame] = static_cast<int16_t>(sample_sum / codec_->microphone_channels());
         }
 
         StoreWakeWordData(mono_data);

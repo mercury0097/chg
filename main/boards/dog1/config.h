@@ -18,6 +18,20 @@
 #define AUDIO_INPUT_SAMPLE_RATE 16000
 #define AUDIO_OUTPUT_SAMPLE_RATE 16000 // 16kHz避免重采样，音质更好
 #define AUDIO_I2S_METHOD_SIMPLEX
+#define AUDIO_INPUT_REFERENCE false
+// 单麦排查模式：
+// true  = 只启用一颗麦，方便定位另一颗是否虚焊/没工作
+// false = 恢复双麦
+#define DOG1_SINGLE_MIC_TEST_MODE false
+// 单麦排查时选择哪一颗：
+// true  = LEFT slot（LR=0）
+// false = RIGHT slot（LR=1）
+#define DOG1_SINGLE_MIC_TEST_USE_LEFT false
+#define AUDIO_INPUT_MICROPHONE_CHANNELS (DOG1_SINGLE_MIC_TEST_MODE ? 1 : 2)
+// 语音增强（SE）开关：
+// true  = 启用人声增强
+// false = 关闭，先优先保证识别稳定性
+#define DOG1_ENABLE_SE false
 
 #define AUDIO_I2S_MIC_GPIO_WS GPIO_NUM_4
 #define AUDIO_I2S_MIC_GPIO_SCK GPIO_NUM_5
@@ -66,4 +80,3 @@
 #define DOG_VERSION "1.0.0"
 
 #endif // _BOARD_CONFIG_H_
-

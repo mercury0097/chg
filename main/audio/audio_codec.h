@@ -33,6 +33,9 @@ public:
   inline int input_sample_rate() const { return input_sample_rate_; }
   inline int output_sample_rate() const { return output_sample_rate_; }
   inline int input_channels() const { return input_channels_; }
+  inline int microphone_channels() const {
+    return input_channels_ - (input_reference_ ? 1 : 0);
+  }
   inline int output_channels() const { return output_channels_; }
   inline int output_volume() const { return output_volume_; }
   inline float input_gain() const { return input_gain_; }
@@ -51,7 +54,7 @@ protected:
   int output_sample_rate_ = 0;
   int input_channels_ = 1;
   int output_channels_ = 1;
-  int output_volume_ = 100; // 默认最大音量
+  int output_volume_ = 70;
   float input_gain_ = 0.0;
 
   virtual int Read(int16_t *dest, int samples) = 0;

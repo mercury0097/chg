@@ -7,6 +7,7 @@
 
 #include <esp_afe_sr_models.h>
 #include <esp_nsn_models.h>
+#include <esp_timer.h>
 #include <model_path.h>
 
 #include <deque>
@@ -29,6 +30,7 @@ public:
     void OnWakeWordDetected(std::function<void(const std::string& wake_word)> callback);
     void Start();
     void Stop();
+    void Release() override;
     size_t GetFeedSize();
     void EncodeWakeWordData();
     bool GetWakeWordOpus(std::vector<uint8_t>& opus);
@@ -36,7 +38,7 @@ public:
 
 private:
     srmodel_list_t *models_ = nullptr;
-    esp_afe_sr_iface_t* afe_iface_ = nullptr;
+    const esp_afe_sr_iface_t* afe_iface_ = nullptr;
     esp_afe_sr_data_t* afe_data_ = nullptr;
     char* wakenet_model_ = NULL;
     std::vector<std::string> wake_words_;
@@ -44,6 +46,11 @@ private:
     std::function<void(const std::string& wake_word)> wake_word_detected_callback_;
     AudioCodec* codec_ = nullptr;
     std::string last_detected_wake_word_;
+    std::vector<int16_t> input_buffer_;
+    std::mutex input_buffer_mutex_;
+    int64_t start_guard_deadline_us_ = 0;
+    bool owns_models_ = false;
+    bool detection_task_created_ = false;
 
     TaskHandle_t wake_word_encode_task_ = nullptr;
     StaticTask_t* wake_word_encode_task_buffer_ = nullptr;

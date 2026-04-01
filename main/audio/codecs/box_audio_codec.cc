@@ -8,10 +8,11 @@
 
 BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int output_sample_rate,
     gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din,
-    gpio_num_t pa_pin, uint8_t es8311_addr, uint8_t es7210_addr, bool input_reference) {
+    gpio_num_t pa_pin, uint8_t es8311_addr, uint8_t es7210_addr, bool input_reference,
+    int microphone_channels) {
     duplex_ = true; // 是否双工
     input_reference_ = input_reference; // 是否使用参考输入，实现回声消除
-    input_channels_ = input_reference_ ? 2 : 1; // 输入通道数
+    input_channels_ = microphone_channels + (input_reference_ ? 1 : 0);
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
     input_gain_ = 30;
@@ -65,7 +66,19 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
 
     es7210_codec_cfg_t es7210_cfg = {};
     es7210_cfg.ctrl_if = in_ctrl_if_;
-    es7210_cfg.mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2 | ES7210_SEL_MIC3 | ES7210_SEL_MIC4;
+    es7210_cfg.mic_selected = 0;
+    if (input_channels_ >= 1) {
+        es7210_cfg.mic_selected |= ES7210_SEL_MIC1;
+    }
+    if (input_channels_ >= 2) {
+        es7210_cfg.mic_selected |= ES7210_SEL_MIC2;
+    }
+    if (input_channels_ >= 3) {
+        es7210_cfg.mic_selected |= ES7210_SEL_MIC3;
+    }
+    if (input_channels_ >= 4) {
+        es7210_cfg.mic_selected |= ES7210_SEL_MIC4;
+    }
     in_codec_if_ = es7210_codec_new(&es7210_cfg);
     assert(in_codec_if_ != NULL);
 
@@ -190,18 +203,27 @@ void BoxAudioCodec::EnableInput(bool enable) {
         return;
     }
     if (enable) {
+        uint16_t channel_mask = 0;
+        for (int channel = 0; channel < input_channels_; ++channel) {
+            channel_mask |= static_cast<uint16_t>(ESP_CODEC_DEV_MAKE_CHANNEL_MASK(channel));
+        }
+
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
             .channel = 4,
-            .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0),
+            .channel_mask = channel_mask,
             .sample_rate = (uint32_t)output_sample_rate_,
             .mclk_multiple = 0,
         };
-        if (input_reference_) {
-            fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
+
+        uint16_t microphone_mask = 0;
+        for (int channel = 0; channel < microphone_channels(); ++channel) {
+            microphone_mask |= static_cast<uint16_t>(ESP_CODEC_DEV_MAKE_CHANNEL_MASK(channel));
         }
         ESP_ERROR_CHECK(esp_codec_dev_open(input_dev_, &fs));
-        ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0), input_gain_));
+        if (microphone_mask != 0) {
+            ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(input_dev_, microphone_mask, input_gain_));
+        }
     } else {
         ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
     }
@@ -231,15 +253,29 @@ void BoxAudioCodec::EnableOutput(bool enable) {
 }
 
 int BoxAudioCodec::Read(int16_t* dest, int samples) {
-    if (input_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t)));
+    if (!input_enabled_) {
+        return 0;
+    }
+
+    esp_err_t ret =
+        esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t));
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "esp_codec_dev_read failed: %s", esp_err_to_name(ret));
+        return 0;
     }
     return samples;
 }
 
 int BoxAudioCodec::Write(const int16_t* data, int samples) {
-    if (output_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
+    if (!output_enabled_) {
+        return 0;
+    }
+
+    esp_err_t ret = esp_codec_dev_write(output_dev_, (void*)data,
+                                        samples * sizeof(int16_t));
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "esp_codec_dev_write failed: %s", esp_err_to_name(ret));
+        return 0;
     }
     return samples;
 }

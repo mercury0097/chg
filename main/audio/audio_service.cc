@@ -18,6 +18,72 @@
 
 #define TAG "AudioService"
 
+namespace {
+std::vector<int16_t> MixMicrophoneChannelsToMono(const std::vector<int16_t> &data,
+                                                 int input_channels,
+                                                 int microphone_channels) {
+  if (input_channels <= 1 || microphone_channels <= 1) {
+    if (input_channels <= 1) {
+      return data;
+    }
+
+    auto mono_data = std::vector<int16_t>(data.size() / input_channels);
+    for (size_t frame = 0, index = 0; frame < mono_data.size();
+         ++frame, index += input_channels) {
+      mono_data[frame] = data[index];
+    }
+    return mono_data;
+  }
+
+  auto mono_data = std::vector<int16_t>(data.size() / input_channels);
+  for (size_t frame = 0, index = 0; frame < mono_data.size();
+       ++frame, index += input_channels) {
+    int32_t sample_sum = 0;
+    for (int channel = 0; channel < microphone_channels; ++channel) {
+      sample_sum += data[index + channel];
+    }
+    mono_data[frame] = static_cast<int16_t>(sample_sum / microphone_channels);
+  }
+  return mono_data;
+}
+
+std::vector<std::vector<int16_t>>
+SplitInterleavedChannels(const std::vector<int16_t> &data, int channels) {
+  auto split = std::vector<std::vector<int16_t>>(channels);
+  const size_t frames = data.size() / channels;
+  for (auto &channel : split) {
+    channel.resize(frames);
+  }
+
+  for (size_t frame = 0, index = 0; frame < frames; ++frame, index += channels) {
+    for (int channel = 0; channel < channels; ++channel) {
+      split[channel][frame] = data[index + channel];
+    }
+  }
+
+  return split;
+}
+
+std::vector<int16_t>
+InterleaveChannels(const std::vector<std::vector<int16_t>> &channels) {
+  if (channels.empty()) {
+    return {};
+  }
+
+  const size_t frames = channels.front().size();
+  const size_t channel_count = channels.size();
+  auto interleaved = std::vector<int16_t>(frames * channel_count);
+
+  for (size_t frame = 0, index = 0; frame < frames; ++frame, index += channel_count) {
+    for (size_t channel = 0; channel < channel_count; ++channel) {
+      interleaved[index + channel] = channels[channel][frame];
+    }
+  }
+
+  return interleaved;
+}
+} // namespace
+
 AudioService::AudioService() { event_group_ = xEventGroupCreate(); }
 
 AudioService::~AudioService() {
@@ -39,8 +105,10 @@ void AudioService::Initialize(AudioCodec *codec) {
       1); // 设置为1: 平衡音质与性能（0=最快但音质差，10=最好但CPU高）
 
   if (codec->input_sample_rate() != 16000) {
-    input_resampler_.Configure(codec->input_sample_rate(), 16000);
-    reference_resampler_.Configure(codec->input_sample_rate(), 16000);
+    input_resamplers_.resize(codec->input_channels());
+    for (auto &resampler : input_resamplers_) {
+      resampler.Configure(codec->input_sample_rate(), 16000);
+    }
   }
 
 #if CONFIG_USE_AUDIO_PROCESSOR
@@ -165,31 +233,23 @@ bool AudioService::ReadAudioData(std::vector<int16_t> &data, int sample_rate,
     if (!codec_->InputData(data)) {
       return false;
     }
-    if (codec_->input_channels() == 2) {
-      auto mic_channel = std::vector<int16_t>(data.size() / 2);
-      auto reference_channel = std::vector<int16_t>(data.size() / 2);
-      for (size_t i = 0, j = 0; i < mic_channel.size(); ++i, j += 2) {
-        mic_channel[i] = data[j];
-        reference_channel[i] = data[j + 1];
+    if (codec_->input_channels() > 1) {
+      auto split_channels = SplitInterleavedChannels(data, codec_->input_channels());
+      auto resampled_channels = std::vector<std::vector<int16_t>>();
+      resampled_channels.reserve(split_channels.size());
+      for (size_t channel = 0; channel < split_channels.size(); ++channel) {
+        auto resampled = std::vector<int16_t>(
+            input_resamplers_[channel].GetOutputSamples(split_channels[channel].size()));
+        input_resamplers_[channel].Process(split_channels[channel].data(),
+                                           split_channels[channel].size(),
+                                           resampled.data());
+        resampled_channels.push_back(std::move(resampled));
       }
-      auto resampled_mic = std::vector<int16_t>(
-          input_resampler_.GetOutputSamples(mic_channel.size()));
-      auto resampled_reference = std::vector<int16_t>(
-          reference_resampler_.GetOutputSamples(reference_channel.size()));
-      input_resampler_.Process(mic_channel.data(), mic_channel.size(),
-                               resampled_mic.data());
-      reference_resampler_.Process(reference_channel.data(),
-                                   reference_channel.size(),
-                                   resampled_reference.data());
-      data.resize(resampled_mic.size() + resampled_reference.size());
-      for (size_t i = 0, j = 0; i < resampled_mic.size(); ++i, j += 2) {
-        data[j] = resampled_mic[i];
-        data[j + 1] = resampled_reference[i];
-      }
+      data = InterleaveChannels(resampled_channels);
     } else {
-      auto resampled =
-          std::vector<int16_t>(input_resampler_.GetOutputSamples(data.size()));
-      input_resampler_.Process(data.data(), data.size(), resampled.data());
+      auto resampled = std::vector<int16_t>(
+          input_resamplers_[0].GetOutputSamples(data.size()));
+      input_resamplers_[0].Process(data.data(), data.size(), resampled.data());
       data = std::move(resampled);
     }
   } else {
@@ -218,7 +278,19 @@ bool AudioService::ReadAudioData(std::vector<int16_t> &data, int sample_rate,
   return true;
 }
 
+void AudioService::ResetInputResamplers() {
+  if (codec_ == nullptr || codec_->input_sample_rate() == 16000) {
+    return;
+  }
+
+  for (auto &resampler : input_resamplers_) {
+    resampler.Configure(codec_->input_sample_rate(), 16000);
+  }
+}
+
 void AudioService::AudioInputTask() {
+  uint32_t input_read_failures = 0;
+
   while (true) {
     EventBits_t bits = xEventGroupWaitBits(event_group_,
                                            AS_EVENT_AUDIO_TESTING_RUNNING |
@@ -247,13 +319,9 @@ void AudioService::AudioInputTask() {
       std::vector<int16_t> data;
       int samples = OPUS_FRAME_DURATION_MS * 16000 / 1000;
       if (ReadAudioData(data, 16000, samples)) {
-        // If input channels is 2, we need to fetch the left channel data
-        if (codec_->input_channels() == 2) {
-          auto mono_data = std::vector<int16_t>(data.size() / 2);
-          for (size_t i = 0, j = 0; i < mono_data.size(); ++i, j += 2) {
-            mono_data[i] = data[j];
-          }
-          data = std::move(mono_data);
+        if (codec_->input_channels() > 1) {
+          data = MixMicrophoneChannelsToMono(data, codec_->input_channels(),
+                                             codec_->microphone_channels());
         }
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToTestingQueue,
                               std::move(data));
@@ -261,12 +329,31 @@ void AudioService::AudioInputTask() {
       }
     }
 
+#if CONFIG_BOARD_TYPE_DUAL_MIC
+    if ((bits & AS_EVENT_WAKE_WORD_RUNNING) &&
+        (bits & AS_EVENT_AUDIO_PROCESSOR_RUNNING)) {
+      std::vector<int16_t> data;
+      constexpr int kSharedFeedSamples = 160; // 10 ms, matches lichuang-dev path
+      if (ReadAudioData(data, 16000, kSharedFeedSamples)) {
+        input_read_failures = 0;
+        wake_word_->Feed(data);
+        audio_processor_->Feed(std::move(data));
+        continue;
+      }
+    }
+#endif
+
     /* Feed the wake word */
     if (bits & AS_EVENT_WAKE_WORD_RUNNING) {
       std::vector<int16_t> data;
       int samples = wake_word_->GetFeedSize();
+      if ((bits & AS_EVENT_AUDIO_PROCESSOR_RUNNING) == 0 &&
+          dynamic_cast<AfeWakeWord *>(wake_word_.get()) != nullptr) {
+        samples = 160;
+      }
       if (samples > 0) {
         if (ReadAudioData(data, 16000, samples)) {
+          input_read_failures = 0;
           wake_word_->Feed(data);
           continue;
         }
@@ -279,6 +366,7 @@ void AudioService::AudioInputTask() {
       int samples = audio_processor_->GetFeedSize();
       if (samples > 0) {
         if (ReadAudioData(data, 16000, samples)) {
+          input_read_failures = 0;
           audio_processor_->Feed(std::move(data));
           // 让出 CPU，避免 AFE 处理时间过长导致看门狗超时
           taskYIELD();
@@ -287,8 +375,13 @@ void AudioService::AudioInputTask() {
       }
     }
 
-    ESP_LOGE(TAG, "Should not be here, bits: %lx", bits);
-    break;
+    input_read_failures++;
+    if (input_read_failures == 1 || input_read_failures % 50 == 0) {
+      ESP_LOGW(TAG,
+               "Audio input temporarily unavailable, bits=0x%lx, failures=%lu",
+               bits, static_cast<unsigned long>(input_read_failures));
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 
   ESP_LOGW(TAG, "Audio input task stopped");
@@ -376,21 +469,6 @@ void AudioService::OpusCodecTask() {
           output_resampler_.Process(task->pcm.data(), task->pcm.size(),
                                     resampled.data());
           task->pcm = std::move(resampled);
-        }
-
-        // 🔊 音频增益处理:提升音量(1.5倍增益,可调整)
-        constexpr float kAudioGain =
-            1.5f; // 增益系数:1.0=原始,1.5=提升50%,2.0=翻倍
-        for (auto &sample : task->pcm) {
-          int32_t amplified = static_cast<int32_t>(sample * kAudioGain);
-          // 削波保护:防止溢出导致失真
-          if (amplified > 32767) {
-            sample = 32767;
-          } else if (amplified < -32768) {
-            sample = -32768;
-          } else {
-            sample = static_cast<int16_t>(amplified);
-          }
         }
 
         lock.lock();
@@ -567,8 +645,15 @@ void AudioService::EnableWakeWordDetection(bool enable) {
     return;
   }
 
-  ESP_LOGD(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
+  ESP_LOGI(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
   if (enable) {
+    if (!codec_->input_enabled()) {
+      codec_->EnableInput(true);
+    }
+    if (codec_->duplex() && codec_->input_reference() &&
+        !codec_->output_enabled()) {
+      codec_->EnableOutput(true);
+    }
     if (!wake_word_initialized_) {
       if (!wake_word_->Initialize(codec_, models_list_)) {
         ESP_LOGE(TAG, "Failed to initialize wake word");
@@ -584,10 +669,21 @@ void AudioService::EnableWakeWordDetection(bool enable) {
         }
       });
     }
+    audio_input_need_warmup_ = true;
+    ResetInputResamplers();
+    wake_word_->Stop();
     wake_word_->Start();
     xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
   } else {
     wake_word_->Stop();
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
+    if (codec_ != nullptr && codec_->microphone_channels() > 1 &&
+        dynamic_cast<AfeWakeWord *>(wake_word_.get()) != nullptr) {
+      ESP_LOGI(TAG, "Releasing wake word AFE for dual-mic listening path");
+      wake_word_->Release();
+      wake_word_initialized_ = false;
+    }
+#endif
     xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
   }
 }
@@ -604,6 +700,7 @@ void AudioService::EnableVoiceProcessing(bool enable) {
     /* We should make sure no audio is playing */
     ResetDecoder();
     audio_input_need_warmup_ = true;
+    ResetInputResamplers();
     audio_processor_->Start();
     xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
   } else {
@@ -796,7 +893,12 @@ void AudioService::CheckAndUpdateAudioPowerState() {
     codec_->EnableInput(false);
   }
   if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
-    codec_->EnableOutput(false);
+    // Keep TX clock when duplex RX is active; otherwise the wake-word input
+    // path can stall after returning to idle on boards that share the duplex
+    // I2S clock tree.
+    if (!(codec_->duplex() && codec_->input_enabled())) {
+      codec_->EnableOutput(false);
+    }
   }
   if (!codec_->input_enabled() && !codec_->output_enabled()) {
     esp_timer_stop(audio_power_timer_);

@@ -548,6 +548,11 @@ def read_wake_word_type_from_sdkconfig(sdkconfig_path):
                 config_values['use_esp_wake_word'] = True
             elif 'CONFIG_USE_AFE_WAKE_WORD=y' in line:
                 config_values['use_afe_wake_word'] = True
+            elif (line.startswith('CONFIG_WAKE_WORD_') and
+                  line.endswith('=y') and
+                  'DISABLED' not in line):
+                # Built-in wake words use the AFE wake word path.
+                config_values['use_afe_wake_word'] = True
             elif 'CONFIG_USE_CUSTOM_WAKE_WORD=y' in line:
                 config_values['use_custom_wake_word'] = True
             elif 'CONFIG_WAKE_WORD_DISABLED=y' in line:

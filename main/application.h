@@ -65,6 +65,7 @@ public:
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
     void OnTouchDetected();
+    void OnShakeDetected();
 
 private:
     Application();
@@ -81,13 +82,13 @@ private:
     std::string last_error_message_;
     AudioService audio_service_;
     TouchHandler touch_handler_;
-    bool touch_message_pending_ = false;
-    bool touch_waiting_start_ack_ = false;
-    bool touch_channel_opened_for_touch_ = false;
+    bool physical_message_pending_ = false;
+    bool physical_waiting_start_ack_ = false;
+    bool physical_channel_opened_for_interaction_ = false;
     bool touch_emotion_followup_pending_ = false;
-    int64_t touch_start_request_time_us_ = 0;
+    int64_t physical_start_request_time_us_ = 0;
     int64_t touch_emotion_followup_deadline_us_ = 0;
-    int touch_mcp_request_id_ = 1;
+    int physical_mcp_request_id_ = 1;
 
     bool has_server_time_ = false;
     bool aborted_ = false;
@@ -100,7 +101,28 @@ private:
     void CheckNewVersion(Ota& ota);
     void CheckAssetsVersion();
     void ShowActivationCode(const std::string& code, const std::string& message);
+    void ContinueOpenAudioChannel(ListeningMode mode);
+    void ContinueWakeWordInvoke(const std::string& wake_word);
+    ListeningMode GetDefaultListeningMode() const;
     void SetListeningMode(ListeningMode mode);
+    void StartPhysicalInteraction(const char* interaction_name,
+                                  const char* message,
+                                  const char* event,
+                                  const char* source,
+                                  const char* kind,
+                                  bool touch_emotion_followup);
+    void SendPhysicalInteractionStartSequence(const char* interaction_name,
+                                              const char* message,
+                                              const char* event,
+                                              const char* source,
+                                              const char* kind,
+                                              bool touch_emotion_followup);
+    void SendPhysicalInteractionEventViaMcp(const char* method,
+                                            const char* event,
+                                            const char* message,
+                                            const char* source,
+                                            const char* kind);
+    void ClearPhysicalInteractionState();
     void SendTouchStartSequence();
     void HandleTouchListenStartAck();
     void CompleteTouchMessage();

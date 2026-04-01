@@ -10,8 +10,15 @@
 
 namespace {
 constexpr const char *kTouchMessage = "（用户轻轻摸了摸你的头）";
+constexpr const char *kShakeMessage = "（用户正在轻轻摇晃你）";
+constexpr const char *kPhysicalInteractionMethod = "notifications/touch";
 constexpr int64_t kTouchStartAckTimeoutUs = 700'000; // 700ms
 constexpr int64_t kTouchEmotionFollowupWindowUs = 8'000'000; // 8s
+#if CONFIG_BOARD_TYPE_DUAL_MIC && CONFIG_USE_DEVICE_AEC
+constexpr bool kUseDualMicFullDuplexAudio = true;
+#else
+constexpr bool kUseDualMicFullDuplexAudio = false;
+#endif
 } // namespace
 
 #include "assets.h"
@@ -37,6 +44,7 @@ static const char *const STATE_STRINGS[] = {
 // 声明外部 Otto 动作函数
 extern void BoardTouchAcknowledgeMotion();
 extern void BoardTouchEmotionMotion(const char *emotion);
+extern void BoardShakeAcknowledgeMotion();
 
 Application::Application() {
   event_group_ = xEventGroupCreate();
@@ -281,16 +289,15 @@ void Application::ToggleChatState() {
   }
 
   if (device_state_ == kDeviceStateIdle) {
-    Schedule([this]() {
+    ListeningMode mode = GetDefaultListeningMode();
+    Schedule([this, mode]() {
       if (!protocol_->IsAudioChannelOpened()) {
         SetDeviceState(kDeviceStateConnecting);
-        if (!protocol_->OpenAudioChannel()) {
-          return;
-        }
+        Schedule([this, mode]() { ContinueOpenAudioChannel(mode); });
+        return;
       }
 
-      SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop
-                                            : kListeningModeRealtime);
+      SetListeningMode(mode);
     });
   } else if (device_state_ == kDeviceStateSpeaking) {
     Schedule([this]() { AbortSpeaking(kAbortReasonNone); });
@@ -318,9 +325,9 @@ void Application::StartListening() {
     Schedule([this]() {
       if (!protocol_->IsAudioChannelOpened()) {
         SetDeviceState(kDeviceStateConnecting);
-        if (!protocol_->OpenAudioChannel()) {
-          return;
-        }
+        Schedule(
+            [this]() { ContinueOpenAudioChannel(kListeningModeManualStop); });
+        return;
       }
 
       SetListeningMode(kListeningModeManualStop);
@@ -553,15 +560,14 @@ void Application::Start() {
       display->SetChatMessage("system", "");
       SetDeviceState(kDeviceStateIdle);
 
-      if (touch_message_pending_) {
+      if (physical_message_pending_) {
         ESP_LOGW(
             TAG,
-            "Touch: audio channel closed before message completed (error)");
-        touch_message_pending_ = false;
-        touch_waiting_start_ack_ = false;
-        touch_start_request_time_us_ = 0;
+            "Physical interaction: audio channel closed before message completed");
+        ClearPhysicalInteractionState();
+        ClearTouchEmotionFollowup();
       }
-      touch_channel_opened_for_touch_ = false;
+      physical_channel_opened_for_interaction_ = false;
     });
   });
   protocol_->OnIncomingJson([this, display](const cJSON *root) {
@@ -794,34 +800,35 @@ void Application::OnWakeWordDetected() {
 
   if (device_state_ == kDeviceStateIdle) {
     audio_service_.EncodeWakeWord();
+    auto wake_word = audio_service_.GetLastWakeWord();
 
     if (!protocol_->IsAudioChannelOpened()) {
       SetDeviceState(kDeviceStateConnecting);
-      if (!protocol_->OpenAudioChannel()) {
-        audio_service_.EnableWakeWordDetection(true);
-        return;
-      }
+      Schedule([this, wake_word]() { ContinueWakeWordInvoke(wake_word); });
+      return;
     }
 
-    auto wake_word = audio_service_.GetLastWakeWord();
-    ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
-#if CONFIG_SEND_WAKE_WORD_DATA
-    // Encode and send the wake word data to the server
-    while (auto packet = audio_service_.PopWakeWordPacket()) {
-      protocol_->SendAudio(std::move(packet));
+    ContinueWakeWordInvoke(wake_word);
+  } else if (device_state_ == kDeviceStateSpeaking ||
+             device_state_ == kDeviceStateListening) {
+    if (!kUseDualMicFullDuplexAudio) {
+      if (device_state_ == kDeviceStateSpeaking) {
+        AbortSpeaking(kAbortReasonWakeWordDetected);
+      }
+      return;
     }
-    // Set the chat state to wake word detected
-    protocol_->SendWakeWordDetected(wake_word);
-    SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop
-                                          : kListeningModeRealtime);
-#else
-    SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop
-                                          : kListeningModeRealtime);
-    // Play the pop up sound to indicate the wake word is detected
-    audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
-#endif
-  } else if (device_state_ == kDeviceStateSpeaking) {
+
     AbortSpeaking(kAbortReasonWakeWordDetected);
+
+    // Clear queued uplink packets so a new wake-word turn starts cleanly.
+    while (auto packet = audio_service_.PopPacketFromSendQueue()) {
+    }
+
+    protocol_->SendStartListening(GetDefaultListeningMode());
+    SetListeningMode(GetDefaultListeningMode());
+    audio_service_.ResetDecoder();
+    audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+    audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
   } else if (device_state_ == kDeviceStateActivating) {
     SetDeviceState(kDeviceStateIdle);
   }
@@ -840,6 +847,57 @@ void Application::AbortSpeaking(AbortReason reason) {
 void Application::SetListeningMode(ListeningMode mode) {
   listening_mode_ = mode;
   SetDeviceState(kDeviceStateListening);
+}
+
+void Application::ContinueOpenAudioChannel(ListeningMode mode) {
+  if (!protocol_ || device_state_ != kDeviceStateConnecting) {
+    return;
+  }
+
+  if (!protocol_->IsAudioChannelOpened() && !protocol_->OpenAudioChannel()) {
+    ESP_LOGW(TAG, "Failed to open audio channel");
+    SetDeviceState(kDeviceStateIdle);
+    return;
+  }
+
+  SetListeningMode(mode);
+}
+
+void Application::ContinueWakeWordInvoke(const std::string &wake_word) {
+  if (!protocol_) {
+    return;
+  }
+
+  if (device_state_ != kDeviceStateIdle &&
+      device_state_ != kDeviceStateConnecting) {
+    return;
+  }
+
+  if (!protocol_->IsAudioChannelOpened()) {
+    if (device_state_ != kDeviceStateConnecting ||
+        !protocol_->OpenAudioChannel()) {
+      audio_service_.EnableWakeWordDetection(true);
+      SetDeviceState(kDeviceStateIdle);
+      return;
+    }
+  }
+
+  ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
+#if CONFIG_SEND_WAKE_WORD_DATA
+  while (auto packet = audio_service_.PopWakeWordPacket()) {
+    protocol_->SendAudio(std::move(packet));
+  }
+  protocol_->SendWakeWordDetected(wake_word);
+  SetListeningMode(GetDefaultListeningMode());
+#else
+  SetListeningMode(GetDefaultListeningMode());
+  audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+#endif
+}
+
+ListeningMode Application::GetDefaultListeningMode() const {
+  return aec_mode_ == kAecOff ? kListeningModeAutoStop
+                              : kListeningModeRealtime;
 }
 
 void Application::SetDeviceState(DeviceState state) {
@@ -868,8 +926,8 @@ void Application::SetDeviceState(DeviceState state) {
     audio_service_.EnableVoiceProcessing(false);
     audio_service_.EnableWakeWordDetection(true);
 
-    // 👆 延迟初始化触摸检测（使用定时器，避免阻塞主事件循环）
-    if (!touch_initialized_) {
+    // 👆 延迟初始化旧 GPIO 触摸检测，避免阻塞主事件循环
+    if (board.UseLegacyTouchSensor() && !touch_initialized_) {
       touch_initialized_ = true;
       ESP_LOGI(TAG, "Will initialize touch handler (GPIO13) in 2 seconds...");
 
@@ -907,30 +965,46 @@ void Application::SetDeviceState(DeviceState state) {
     display->SetEmotion("neutral");
     display->SetChatMessage("system", "");
     break;
-  case kDeviceStateListening:
+  case kDeviceStateListening: {
     display->SetStatus(Lang::Strings::LISTENING);
     display->SetEmotion("neutral");
 
-    // Send start listening if audio processor isn't running
-    if (!audio_service_.IsAudioProcessorRunning()) {
-      protocol_->SendStartListening(listening_mode_);
-    }
+    const bool was_audio_processor_running =
+        audio_service_.IsAudioProcessorRunning();
 
-    // Always enable voice processing when entering Listening state
-    // This is critical for VAD to work after state transitions
-    audio_service_.EnableVoiceProcessing(true);
-    audio_service_.EnableWakeWordDetection(false);
+    if (kUseDualMicFullDuplexAudio && aec_mode_ == kAecOnDeviceSide) {
+      if (!was_audio_processor_running) {
+        protocol_->SendStartListening(listening_mode_);
+        audio_service_.EnableVoiceProcessing(true);
+      }
+      audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+    } else {
+      // On the dual-mic board the wake-word AFE owns the active capture path.
+      // Tear it down before starting the communication AFE to avoid racing over
+      // the same mic resources.
+      audio_service_.EnableWakeWordDetection(false);
+      audio_service_.EnableVoiceProcessing(true);
+
+      if (!was_audio_processor_running) {
+        protocol_->SendStartListening(listening_mode_);
+      }
+    }
     break;
+  }
   case kDeviceStateSpeaking:
     display->SetStatus(Lang::Strings::SPEAKING);
 
-    //  ⚠️  Barge-in 暂时禁用：ESP-SR AFE 不支持 AEC + VAD 同时运行
-    // Speaking 状态下关闭音频处理，避免 CPU 过载和 Ringbuffer 溢出
-    // 用户仍可在 Listening 状态时打断（说话时机器人会停止说话并监听）
-    if (listening_mode_ != kListeningModeRealtime) {
+    if (kUseDualMicFullDuplexAudio && aec_mode_ == kAecOnDeviceSide) {
+      if (listening_mode_ != kListeningModeRealtime) {
+        audio_service_.EnableVoiceProcessing(false);
+        audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+      }
+    } else if (listening_mode_ != kListeningModeRealtime) {
+      //  ⚠️  Barge-in 暂时禁用：ESP-SR AFE 不支持 AEC + VAD 同时运行
+      // Speaking 状态下关闭音频处理，避免 CPU 过载和 Ringbuffer 溢出
+      // 用户仍可在 Listening 状态时打断（说话时机器人会停止说话并监听）
       audio_service_.EnableVoiceProcessing(false);
-      // Only AFE wake word can be detected in speaking mode
-      audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+      audio_service_.EnableWakeWordDetection(false);
     }
     audio_service_.ResetDecoder();
     break;
@@ -1095,147 +1169,130 @@ void Application::PlaySound(const std::string_view &sound) {
 }
 
 void Application::OnTouchDetected() {
-  ESP_LOGI(TAG, "Touch detected! Sending touch context to AI");
-
+  ESP_LOGI(TAG, "Touch detected");
   BoardTouchAcknowledgeMotion();
+  StartPhysicalInteraction("Touch", kTouchMessage, "touch", "touch_sensor",
+                           "physical_touch", true);
+}
 
+void Application::OnShakeDetected() {
+  ESP_LOGI(TAG, "Shake detected");
+  BoardShakeAcknowledgeMotion();
+  StartPhysicalInteraction("Shake", kShakeMessage, "shake", "imu_sensor",
+                           "physical_shake", false);
+}
+
+void Application::StartPhysicalInteraction(const char *interaction_name,
+                                           const char *message,
+                                           const char *event,
+                                           const char *source,
+                                           const char *kind,
+                                           bool touch_emotion_followup) {
   if (!protocol_) {
-    ESP_LOGW(TAG, "Cannot send touch message - protocol not initialized");
+    ESP_LOGW(TAG, "Cannot send %s message - protocol not initialized",
+             interaction_name);
     return;
   }
 
-  Schedule([this]() {
-    if (touch_message_pending_) {
-      ESP_LOGW(TAG, "Touch message already pending, ignoring additional touch");
+  Schedule([this, interaction_name, message, event, source, kind,
+            touch_emotion_followup]() {
+    if (physical_message_pending_) {
+      ESP_LOGW(TAG,
+               "%s message already pending, ignoring additional interaction",
+               interaction_name);
       return;
     }
 
-    touch_message_pending_ = true;
-    touch_emotion_followup_pending_ = true;
-    touch_emotion_followup_deadline_us_ =
-        esp_timer_get_time() + kTouchEmotionFollowupWindowUs;
+    physical_message_pending_ = true;
+    if (touch_emotion_followup) {
+      touch_emotion_followup_pending_ = true;
+      touch_emotion_followup_deadline_us_ =
+          esp_timer_get_time() + kTouchEmotionFollowupWindowUs;
+    }
 
-    auto start_touch_sequence = [this]() {
-      ESP_LOGI(TAG, "Touch: starting touch interaction sequence");
-      SendTouchStartSequence();
+    auto start_sequence = [this, interaction_name, message, event, source, kind,
+                           touch_emotion_followup]() {
+      ESP_LOGI(TAG, "%s: starting interaction sequence", interaction_name);
+      SendPhysicalInteractionStartSequence(interaction_name, message, event,
+                                           source, kind,
+                                           touch_emotion_followup);
     };
 
     if (protocol_->IsAudioChannelOpened()) {
       if (device_state_ == kDeviceStateSpeaking) {
-        ESP_LOGI(TAG, "Touch: aborting speech before starting touch sequence");
+        ESP_LOGI(TAG, "%s: aborting speech before starting interaction",
+                 interaction_name);
         AbortSpeaking(kAbortReasonNone);
       }
-      start_touch_sequence();
+      start_sequence();
       return;
     }
 
     if (device_state_ != kDeviceStateIdle) {
-      ESP_LOGW(TAG, "Cannot start touch interaction - device busy");
-      touch_message_pending_ = false;
-      ClearTouchEmotionFollowup();
+      ESP_LOGW(TAG, "Cannot start %s interaction - device busy",
+               interaction_name);
+      ClearPhysicalInteractionState();
+      if (touch_emotion_followup) {
+        ClearTouchEmotionFollowup();
+      }
       return;
     }
 
-    ESP_LOGI(TAG, "Touch: audio channel closed, opening for touch interaction");
+    ESP_LOGI(TAG, "%s: audio channel closed, opening interaction channel",
+             interaction_name);
     SetDeviceState(kDeviceStateConnecting);
-    touch_channel_opened_for_touch_ = true;
+    physical_channel_opened_for_interaction_ = true;
 
     if (!protocol_->OpenAudioChannel()) {
-      ESP_LOGW(TAG, "Failed to open audio channel for touch interaction");
-      touch_message_pending_ = false;
-      touch_channel_opened_for_touch_ = false;
-      ClearTouchEmotionFollowup();
+      ESP_LOGW(TAG, "Failed to open audio channel for %s interaction",
+               interaction_name);
+      ClearPhysicalInteractionState();
+      if (touch_emotion_followup) {
+        ClearTouchEmotionFollowup();
+      }
       SetDeviceState(kDeviceStateIdle);
       return;
     }
 
-    ESP_LOGI(TAG, "Touch: audio channel opened, starting sequence");
-    start_touch_sequence();
-
-    if (device_state_ == kDeviceStateConnecting) {
-      // The state will be updated to Listening when the channel is fully open
-      // and we send the start command But for now, we can leave it as
-      // Connecting or set to Idle if we want to be safe Actually,
-      // OpenAudioChannel is async in terms of connection, but we called it
-      // synchronously here? No, OpenAudioChannel returns bool immediately but
-      // connection happens in background? Let's check OpenAudioChannel
-      // implementation if needed. Based on existing code, it seems we just wait
-      // for OnAudioChannelOpened or just proceed. In the original code: if
-      // (device_state_ == kDeviceStateConnecting) {
-      //    SetDeviceState(kDeviceStateIdle);
-      // }
-      // But here we want to stay in a state that allows interaction.
-      // Let's keep it as Connecting, and it will transition to Listening when
-      // SendStartListening is called in SendTouchStartSequence Wait,
-      // SendTouchStartSequence calls protocol_->SendStartListening. If protocol
-      // is not yet connected, SendStartListening might fail or be queued.
-      // MqttProtocol::OpenAudioChannel usually initiates connection.
-      // We might need to wait for OnAudioChannelOpened callback?
-      // The original code had:
-      // protocol_->OnAudioChannelOpened([this, codec, &board]() { ... });
-      // This callback is already set in Start().
-
-      // However, we are calling start_touch_sequence() immediately after
-      // OpenAudioChannel(). If OpenAudioChannel() is not blocking until
-      // connected, this might be too early. But the original code for MCP did
-      // the same: if (!protocol_->OpenAudioChannel()) { ... } send_touch_mcp();
-
-      // Let's assume it works similarly.
-      // But wait, SendStartListening sends a JSON message. If the
-      // websocket/mqtt is not connected, it will fail. If OpenAudioChannel just
-      // starts the process, we might need to wait.
-
-      // Actually, looking at ToggleChatState:
-      // if (!protocol_->IsAudioChannelOpened()) {
-      //     SetDeviceState(kDeviceStateConnecting);
-      //     if (!protocol_->OpenAudioChannel()) { return; }
-      // }
-      // SetListeningMode(...);
-
-      // So it seems we can call it immediately?
-      // But SetListeningMode just sets the state. It doesn't send data
-      // immediately? Wait, SetListeningMode calls protocol_->SendStartListening
-      // if audio processor is not running.
-
-      // Let's stick to the pattern.
-    }
+    start_sequence();
   });
-
-  // 播放开心的音效（如果有的话）
-  // audio_service_.PlaySound(Lang::Sounds::OGG_HAPPY);  //
-  // 如果有定义开心音效的话
 }
 
 void Application::SendTouchStartSequence() {
+  SendPhysicalInteractionStartSequence("Touch", kTouchMessage, "touch",
+                                       "touch_sensor", "physical_touch", true);
+}
+
+void Application::SendPhysicalInteractionStartSequence(
+    const char *interaction_name, const char *message, const char *event,
+    const char *source, const char *kind, bool touch_emotion_followup) {
   if (!protocol_) {
     return;
   }
 
-  ESP_LOGI(TAG, "Touch: starting sequence");
+  ESP_LOGI(TAG, "%s: starting sequence", interaction_name);
 
-  // 1. If speaking, abort it
   if (device_state_ == kDeviceStateSpeaking) {
     AbortSpeaking(kAbortReasonNone);
   }
 
-  // 2. Ensure audio channel is open (for subsequent audio streaming)
   if (!protocol_->IsAudioChannelOpened()) {
     SetDeviceState(kDeviceStateConnecting);
     if (!protocol_->OpenAudioChannel()) {
-      ESP_LOGE(TAG, "Failed to open audio channel");
-      ClearTouchEmotionFollowup();
+      ESP_LOGE(TAG, "Failed to open audio channel for %s interaction",
+               interaction_name);
+      ClearPhysicalInteractionState();
+      if (touch_emotion_followup) {
+        ClearTouchEmotionFollowup();
+      }
+      SetDeviceState(kDeviceStateIdle);
       return;
     }
   }
 
-  // 3. Send Wake Word Detected (Text)
-  // This triggers the server to respond
-  ESP_LOGI(TAG, "Touch: sending wake word: %s", kTouchMessage);
-  protocol_->SendWakeWordDetected(kTouchMessage);
+  ESP_LOGI(TAG, "%s: sending wake word: %s", interaction_name, message);
+  protocol_->SendWakeWordDetected(message);
 
-  // 4. Set listening mode based on AEC capability
-  // If AEC is off, we must use AutoStop to avoid recording the speaker output
-  // (echo)
   if (aec_mode_ == kAecOff) {
     listening_mode_ = kListeningModeAutoStop;
   } else {
@@ -1243,45 +1300,55 @@ void Application::SendTouchStartSequence() {
   }
   SetDeviceState(kDeviceStateListening);
 
-  // 5. Send MCP notification as backup/context
-  SendTouchEventViaMcp();
-
-  touch_message_pending_ = false;
-  touch_waiting_start_ack_ = false;
-  touch_start_request_time_us_ = 0;
-
-  if (touch_channel_opened_for_touch_) {
-    touch_channel_opened_for_touch_ = false;
-  }
+  SendPhysicalInteractionEventViaMcp(kPhysicalInteractionMethod, event, message,
+                                     source, kind);
+  ClearPhysicalInteractionState();
 }
 
 void Application::SendTouchEventViaMcp() {
+  SendPhysicalInteractionEventViaMcp(kPhysicalInteractionMethod, "touch",
+                                     kTouchMessage, "touch_sensor",
+                                     "physical_touch");
+}
+
+void Application::SendPhysicalInteractionEventViaMcp(const char *method,
+                                                     const char *event,
+                                                     const char *message,
+                                                     const char *source,
+                                                     const char *kind) {
   if (!protocol_) {
     return;
   }
 
   cJSON *meta = cJSON_CreateObject();
-  cJSON_AddStringToObject(meta, "source", "touch_sensor");
-  cJSON_AddStringToObject(meta, "kind", "physical_touch");
+  cJSON_AddStringToObject(meta, "source", source);
+  cJSON_AddStringToObject(meta, "kind", kind);
 
   cJSON *params = cJSON_CreateObject();
-  cJSON_AddStringToObject(params, "event", "touch");
-  cJSON_AddStringToObject(params, "message", kTouchMessage);
+  cJSON_AddStringToObject(params, "event", event);
+  cJSON_AddStringToObject(params, "message", message);
   cJSON_AddItemToObject(params, "meta", meta);
 
   cJSON *rpc = cJSON_CreateObject();
   cJSON_AddStringToObject(rpc, "jsonrpc", "2.0");
-  cJSON_AddNumberToObject(rpc, "id", touch_mcp_request_id_++);
-  cJSON_AddStringToObject(rpc, "method", "notifications/touch");
+  cJSON_AddNumberToObject(rpc, "id", physical_mcp_request_id_++);
+  cJSON_AddStringToObject(rpc, "method", method);
   cJSON_AddItemToObject(rpc, "params", params);
 
   char *payload_str = cJSON_PrintUnformatted(rpc);
   if (payload_str != nullptr) {
-    ESP_LOGI(TAG, "Touch: MCP message: %s", payload_str);
+    ESP_LOGI(TAG, "Physical interaction MCP message: %s", payload_str);
     protocol_->SendMcpMessage(payload_str);
     cJSON_free(payload_str);
   }
   cJSON_Delete(rpc);
+}
+
+void Application::ClearPhysicalInteractionState() {
+  physical_message_pending_ = false;
+  physical_waiting_start_ack_ = false;
+  physical_start_request_time_us_ = 0;
+  physical_channel_opened_for_interaction_ = false;
 }
 
 void Application::MaybeRunTouchEmotionMotion(const std::string &emotion) {

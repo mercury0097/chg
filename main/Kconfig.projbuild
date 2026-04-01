@@ -85,7 +85,7 @@ choice BOARD_TYPE
     prompt "Board Type"
     default BOARD_TYPE_PALQIQI1
     help
-        Board type. 开发板类型 (Only 3 boards: palqiqi1, dog1, palqiqi2)
+        Board type. 开发板类型
     config BOARD_TYPE_PALQIQI1
         bool "Palqiqi1 (from xz1)"
         depends on IDF_TARGET_ESP32S3
@@ -101,6 +101,11 @@ choice BOARD_TYPE
         depends on IDF_TARGET_ESP32S3
         select LV_USE_GIF
         select LV_GIF_CACHE_DECODE_DATA
+    config BOARD_TYPE_DUAL_MIC
+        bool "Dual Mic"
+        depends on IDF_TARGET_ESP32S3
+        select LV_USE_GIF
+        select LV_GIF_CACHE_DECODE_DATA
 endchoice
 
 config USE_AUDIO_PROCESSOR
@@ -112,13 +117,21 @@ config USE_AUDIO_PROCESSOR
 
 choice WAKE_WORD
     prompt "Wake Word"
-    default WAKE_WORD_HILEXIN
+    default WAKE_WORD_NIHAOXIAOZHI
     help
         Select the wake word to use
+
+    config WAKE_WORD_NIHAOXIAOZHI
+        bool "Ni Hao Xiao Zhi (你好小智)"
+        depends on (IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32P4) && SPIRAM
+        select SR_WN_WN9_NIHAOXIAOZHI_TTS
+        help
+            Default wake word is "Ni Hao Xiao Zhi"
 
     config WAKE_WORD_HILEXIN
         bool "Hi Lexin (嗨 乐鑫)"
         depends on (IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32P4) && SPIRAM
+        select SR_WN_WN9_HILEXIN
         help
             Default wake word is "Hi Lexin"
 

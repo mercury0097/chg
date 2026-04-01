@@ -6,6 +6,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -128,8 +129,7 @@ private:
   std::unique_ptr<AudioDebugger> audio_debugger_;
   std::unique_ptr<OpusEncoderWrapper> opus_encoder_;
   std::unique_ptr<OpusDecoderWrapper> opus_decoder_;
-  OpusResampler input_resampler_;
-  OpusResampler reference_resampler_;
+  std::vector<OpusResampler> input_resamplers_;
   OpusResampler output_resampler_;
   DebugStatistics debug_statistics_;
   srmodel_list_t *models_list_ = nullptr;
@@ -169,6 +169,7 @@ private:
   void PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t> &&pcm);
   void SetDecodeSampleRate(int sample_rate, int frame_duration);
   void CheckAndUpdateAudioPowerState();
+  void ResetInputResamplers();
 };
 
 #endif

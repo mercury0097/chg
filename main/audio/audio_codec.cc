@@ -25,16 +25,36 @@ bool AudioCodec::InputData(std::vector<int16_t> &data) {
 }
 
 void AudioCodec::Start() {
-  constexpr int kDefaultVolume = 100; // 开机默认最大音量
+  constexpr int kDefaultVolume = 70;
+  constexpr int kMinimumVolume = 10;
 
-  // 强制使用最大音量,不读取 NVS 中的旧值
-  output_volume_ = kDefaultVolume;
-  ESP_LOGI(TAG, "Using default maximum volume: %d", output_volume_);
+  Settings settings("audio", true);
+  output_volume_ = settings.GetInt("output_volume", output_volume_);
 
-  // 保存到 NVS,下次开机继续使用最大音量
-  Settings settings_rw("audio", true);
-  settings_rw.SetInt("output_volume", output_volume_);
-  ESP_LOGI(TAG, "Saved volume to NVS: %d", output_volume_);
+  // Earlier builds forced 100 into NVS on every boot. Migrate that once so
+  // existing devices return to the normal playback level after upgrade.
+  if (!settings.GetBool("ov_migrated", false)) {
+    if (output_volume_ >= 100) {
+      output_volume_ = kDefaultVolume;
+      settings.SetInt("output_volume", output_volume_);
+      ESP_LOGI(TAG, "Migrated forced maximum volume to %d", output_volume_);
+    }
+    settings.SetBool("ov_migrated", true);
+  }
+
+  if (output_volume_ <= 0) {
+    ESP_LOGW(TAG,
+             "Output volume value (%d) is too small, setting to minimum (%d)",
+             output_volume_, kMinimumVolume);
+    output_volume_ = kMinimumVolume;
+    settings.SetInt("output_volume", output_volume_);
+  } else if (output_volume_ > 100) {
+    ESP_LOGW(TAG,
+             "Output volume value (%d) is invalid, setting to default (%d)",
+             output_volume_, kDefaultVolume);
+    output_volume_ = kDefaultVolume;
+    settings.SetInt("output_volume", output_volume_);
+  }
 
   if (tx_handle_ != nullptr) {
     ESP_ERROR_CHECK(i2s_channel_enable(tx_handle_));
@@ -44,9 +64,7 @@ void AudioCodec::Start() {
     ESP_ERROR_CHECK(i2s_channel_enable(rx_handle_));
   }
 
-  EnableInput(true);
-  EnableOutput(true);
-  ESP_LOGI(TAG, "Audio codec started");
+  ESP_LOGI(TAG, "Audio codec started with volume %d", output_volume_);
 }
 
 void AudioCodec::SetOutputVolume(int volume) {

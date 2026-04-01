@@ -84,7 +84,7 @@ endfunction()
 set(BUILTIN_TEXT_FONT font_puhui_14_1)
 set(BUILTIN_ICON_FONT font_awesome_14_1)
 
-# Add board files according to BOARD_TYPE (Only 3 boards: palqiqi1, dog1, palqiqi2)
+# Add board files according to BOARD_TYPE
 if(CONFIG_BOARD_TYPE_PALQIQI1)
     set(BOARD_TYPE "palqiqi1")
     set(BUILTIN_TEXT_FONT font_puhui_16_4)
@@ -97,12 +97,23 @@ elseif(CONFIG_BOARD_TYPE_PALQIQI2)
     set(BOARD_TYPE "palqiqi2")
     set(BUILTIN_TEXT_FONT font_puhui_16_4)
     set(BUILTIN_ICON_FONT font_awesome_16_4)
+elseif(CONFIG_BOARD_TYPE_DUAL_MIC)
+    set(BOARD_TYPE "dual-mic")
+    set(BUILTIN_TEXT_FONT font_puhui_16_4)
+    set(BUILTIN_ICON_FONT font_awesome_16_4)
 endif()
 
 file(GLOB_RECURSE BOARD_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE}/*.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE}/*.c
 )
+list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE})
+if(CONFIG_BOARD_TYPE_DUAL_MIC)
+    file(GLOB DOG_VECTOR_EYE_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/boards/dog1/vector_eyes/*.cc
+    )
+    list(APPEND BOARD_SOURCES ${DOG_VECTOR_EYE_SOURCES})
+endif()
 list(APPEND SOURCES ${BOARD_SOURCES})
 
 # Select audio processor according to Kconfig

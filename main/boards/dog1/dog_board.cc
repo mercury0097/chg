@@ -7,10 +7,10 @@
 #include <wifi_station.h>
 
 #include "application.h"
-#include "codecs/no_audio_codec.h"
 #include "button.h"
 #include "config.h"
 #include "display/lcd_display.h"
+#include "dog_audio_codec.h"
 #include "lamp_controller.h"
 #include "led/single_led.h"
 #include "mcp_server.h"
@@ -150,11 +150,10 @@ public:
     virtual void StartNetworkServices() override { InitializeApiServer(); }
 
     virtual AudioCodec* GetAudioCodec() override {
-        // 使用支持软件 AEC 参考信号的编解码器，提高唤醒词打断灵敏度
-        static NoAudioCodecSimplexAec audio_codec(AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
-                                               AUDIO_I2S_SPK_GPIO_BCLK, AUDIO_I2S_SPK_GPIO_LRCK,
-                                               AUDIO_I2S_SPK_GPIO_DOUT, AUDIO_I2S_MIC_GPIO_SCK,
-                                               AUDIO_I2S_MIC_GPIO_WS, AUDIO_I2S_MIC_GPIO_DIN);
+        static DogDualMicAudioCodec audio_codec(AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
+                                                AUDIO_I2S_SPK_GPIO_BCLK, AUDIO_I2S_SPK_GPIO_LRCK,
+                                                AUDIO_I2S_SPK_GPIO_DOUT, AUDIO_I2S_MIC_GPIO_SCK,
+                                                AUDIO_I2S_MIC_GPIO_WS, AUDIO_I2S_MIC_GPIO_DIN);
         return &audio_codec;
     }
 
@@ -173,7 +172,6 @@ public:
 };
 
 DECLARE_BOARD(DogBoard);
-
 
 
 

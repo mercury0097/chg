@@ -23,6 +23,7 @@ static constexpr int kScanRetryDelayMs = 2000;
 static constexpr int kFastReconnectLimit = 2;
 static constexpr int kMinCandidateRssi = -88;
 static constexpr int kWeakRssiThreshold = -70;
+static constexpr uint8_t kStaFailureRetryCount = 2;
 
 static bool ShouldRescanByReason(wifi_err_reason_t reason) {
     switch (reason) {
@@ -165,6 +166,7 @@ void WifiStation::Start() {
                                                         &instance_got_ip_));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20));
 
     if (max_tx_power_ != 0) {
         ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(max_tx_power_));
@@ -279,6 +281,12 @@ void WifiStation::StartConnect() {
     bzero(&wifi_config, sizeof(wifi_config));
     strcpy((char *)wifi_config.sta.ssid, ap_record.ssid.c_str());
     strcpy((char *)wifi_config.sta.password, ap_record.password.c_str());
+    wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    wifi_config.sta.failure_retry_cnt = kStaFailureRetryCount;
+    wifi_config.sta.threshold.rssi = kMinCandidateRssi;
+    wifi_config.sta.pmf_cfg.capable = true;
+    wifi_config.sta.pmf_cfg.required = false;
     if (remember_bssid_ && !disable_bssid_for_next_connect_) {
         wifi_config.sta.channel = ap_record.channel;
         memcpy(wifi_config.sta.bssid, ap_record.bssid, 6);
@@ -286,6 +294,12 @@ void WifiStation::StartConnect() {
     } else {
         wifi_config.sta.bssid_set = false;
     }
+    ESP_LOGI(TAG,
+             "Connecting to %s, channel=%d, remember_bssid=%d, retry=%u",
+             ap_record.ssid.c_str(),
+             ap_record.channel,
+             wifi_config.sta.bssid_set,
+             wifi_config.sta.failure_retry_cnt);
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
 
     reconnect_count_ = 0;

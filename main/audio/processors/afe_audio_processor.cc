@@ -3,6 +3,8 @@
 #include <string.h>
 #include <esp_partition.h>
 
+#include "config.h"
+
 #define PROCESSOR_RUNNING 0x01
 
 #define TAG "AfeAudioProcessor"
@@ -15,11 +17,15 @@ AfeAudioProcessor::AfeAudioProcessor()
 void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srmodel_list_t* models_list) {
     codec_ = codec;
     frame_samples_ = frame_duration_ms * 16000 / 1000;
+    has_reference_ = codec_->input_reference();
+    use_sr_frontend_ = codec_->microphone_channels() > 1;
+    aec_available_ = false;
+    device_aec_enabled_ = false;
 
     // Pre-allocate output buffer capacity
     output_buffer_.reserve(frame_samples_);
 
-    int ref_num = codec_->input_reference() ? 1 : 0;
+    int ref_num = has_reference_ ? 1 : 0;
 
     std::string input_format;
     for (int i = 0; i < codec_->input_channels() - ref_num; i++) {
@@ -53,10 +59,18 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
         }
     }
     
-    // 强制重新加载模型
-    ESP_LOGI(TAG, "🔍 强制从 model 分区重新加载模型（忽略可能的缓存）...");
-    
-    srmodel_list_t *models = esp_srmodel_init("model");
+    // 双麦对话态优先复用已加载的模型列表，避免额外复制一份模型元数据。
+    if (use_sr_frontend_ && models_list != nullptr) {
+        ESP_LOGI(TAG, "🔍 复用已加载的 model 列表（dual-mic 路径）...");
+        models_ = models_list;
+        owns_models_ = false;
+    } else {
+        ESP_LOGI(TAG, "🔍 强制从 model 分区重新加载模型（忽略可能的缓存）...");
+        models_ = esp_srmodel_init("model");
+        owns_models_ = true;
+    }
+
+    srmodel_list_t *models = models_;
     if (models == nullptr) {
         ESP_LOGE(TAG, "❌ 从 model 分区加载模型失败！");
         return;
@@ -111,15 +125,27 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
         ESP_LOGI(TAG, "🔍 VAD 模型: 使用默认 (WebRTC)");
     #endif
     
-    // 使用低功耗模式，避免 CPU 过载
-    // 🎯 传入 models 以确保使用我们指定的 nsnet2 和 vadnet1_medium
-    afe_config_t* afe_config = afe_config_init(input_format.c_str(), models, AFE_TYPE_VC, AFE_MODE_LOW_COST);
+    // 双麦板在对话阶段不能继续走 AFE_TYPE_VC，否则 ESP-SR 会退化成单麦模式。
+    auto afe_type = use_sr_frontend_ ? AFE_TYPE_SR : AFE_TYPE_VC;
+    ESP_LOGI(TAG,
+             "🎛️  AFE communication frontend: %s (input_format=%s, mic=%d, ref=%d)",
+             use_sr_frontend_ ? "AFE_TYPE_SR" : "AFE_TYPE_VC",
+             input_format.c_str(), codec_->microphone_channels(), ref_num);
+
+    // 对话态不需要 WakeNet，传空模型表避免把唤醒词链也挂进 VC/SR AFE。
+    afe_config_t* afe_config =
+        afe_config_init(input_format.c_str(), nullptr, afe_type,
+                        AFE_MODE_LOW_COST);
+    if (afe_config == nullptr) {
+        ESP_LOGE(TAG, "Failed to create AFE config");
+        return;
+    }
     // 🛡️ 使用 SR_LOW_COST 模式的 AEC，VOIP 模式太耗 CPU 会触发看门狗
     afe_config->aec_mode = AEC_MODE_SR_LOW_COST;
     
     // 🎯 优化 VAD 参数以更好地检测人声
     afe_config->vad_mode = VAD_MODE_3;  // 最灵敏模式（0=不灵敏, 3=灵敏）
-    afe_config->vad_min_noise_ms = 50;   // 缩短噪声判断时间（从100ms降到50ms）
+    afe_config->vad_min_noise_ms = 110;  // 增加噪声判定防抖，减少短暂停顿/串音导致的误切换
     if (vad_model_name != nullptr) {
         afe_config->vad_model_name = vad_model_name;
         ESP_LOGI(TAG, "✅ VAD 人声检测: 神经网络模式 (%s, Level 3 高灵敏)", vad_model_name);
@@ -144,19 +170,32 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     // 🎯 启用 AGC（自动增益控制）增强人声
     afe_config->agc_init = true;
     afe_config->agc_mode = AFE_AGC_MODE_WEBRTC;  // 使用 WEBRTC AGC
-    afe_config->agc_compression_gain_db = 15;     // 压缩增益 15dB（默认9，越大越激进）
+#if CONFIG_BOARD_TYPE_DOG1
+    afe_config->agc_compression_gain_db = 11;     // Dog1: 适度增强，减少底噪被一并拉高
+#else
+    afe_config->agc_compression_gain_db = 15;     // 其他板型保留原配置
+#endif
     afe_config->agc_target_level_dbfs = 3;        // 目标电平 -3dBFS（默认3）
-    ESP_LOGI(TAG, "✅ AGC 自动增益控制: WEBRTC 模式 (增益=15dB)");
+    ESP_LOGI(TAG, "✅ AGC 自动增益控制: WEBRTC 模式 (增益=%ddB)",
+             afe_config->agc_compression_gain_db);
     
-    // 🎯 启用 SE（语音增强）突出人声频段
+    // 🎯 SE（语音增强）在硬件边缘状态下可能把“像人声的串音”也一并强化。
+#if CONFIG_BOARD_TYPE_DOG1
+    afe_config->se_init = DOG1_ENABLE_SE;
+    ESP_LOGI(TAG, "✅ SE 语音增强: %s", DOG1_ENABLE_SE ? "已启用" : "已禁用");
+#else
     afe_config->se_init = true;
     ESP_LOGI(TAG, "✅ SE 语音增强: 已启用（突出人声频段，抑制音乐）");
+#endif
     
-    afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+    // 双麦路径在唤醒词切 Listening 时最容易顶爆内存，改成内存均衡分配。
+    afe_config->memory_alloc_mode =
+        use_sr_frontend_ ? AFE_MEMORY_ALLOC_INTERNAL_PSRAM_BALANCE
+                         : AFE_MEMORY_ALLOC_MORE_PSRAM;
     
     // 🎯 大幅增加 AFE Ringbuffer 大小，避免 Speaking 状态下缓冲区溢出
     // VADNet1 神经网络处理更耗时，需要更大的缓冲区防止数据丢失
-    afe_config->afe_ringbuf_size = 2000;  // 从 1000 增加到 2000（进一步增大缓冲）
+    afe_config->afe_ringbuf_size = use_sr_frontend_ ? 1200 : 2000;
     
     // 🎯 AFE 任务固定到 CPU1（负载较轻的核心）
     // CPU0: audio_input(8) + 图形渲染 → 负载重
@@ -167,13 +206,20 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     // 优先级 4（中等偏高）：高于播放任务(3)，但不会阻塞系统
     afe_config->afe_perferred_priority = 4;  // 从 2 提升到 4
 
-    // 🎯 启用 AEC（回声消除）+ VAD（语音检测）
-    // 同时启用 AEC 和 VAD，AEC 消除播放音频的回声，VAD 检测人声
-    afe_config->aec_init = codec_->input_reference();  // 有参考通道才启用 AEC
+    // Initialize the AEC engine only when device-side AEC is compiled in.
+    // We still start in VAD mode and switch to AEC at runtime when requested.
+#if CONFIG_USE_DEVICE_AEC
+    afe_config->aec_init = has_reference_;
+#else
+    afe_config->aec_init = false;
+#endif
+    aec_available_ = afe_config->aec_init;
     afe_config->vad_init = true;  // 始终启用 VAD 用于人声检测
     
-    if (afe_config->aec_init) {
-        ESP_LOGI(TAG, "✅ AEC 回声消除: 已启用（VOIP_LOW_COST 模式）");
+    if (aec_available_) {
+        ESP_LOGI(TAG, "ℹ️  AEC 回声消除: 已初始化，Listening 模式默认关闭");
+    } else if (has_reference_) {
+        ESP_LOGI(TAG, "ℹ️  AEC 回声消除: 未初始化，Listening 模式仅使用 VAD");
     } else {
         ESP_LOGI(TAG, "ℹ️  AEC 回声消除: 未启用（需要参考音频通道）");
     }
@@ -183,7 +229,15 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
              afe_config->afe_ringbuf_size, afe_config->afe_perferred_priority, afe_config->afe_perferred_core);
 
     afe_iface_ = esp_afe_handle_from_config(afe_config);
+    if (afe_iface_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to get AFE interface from config");
+        return;
+    }
     afe_data_ = afe_iface_->create_from_config(afe_config);
+    if (afe_data_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create AFE processor instance");
+        return;
+    }
     
     // 🎯 audio_communication 任务固定到 CPU1（避免 CPU0 过载）
     // 增加栈大小到 8KB，支持 Speaking 状态下 AEC + VAD + 唤醒词同时运行
@@ -199,6 +253,9 @@ AfeAudioProcessor::~AfeAudioProcessor() {
     if (afe_data_ != nullptr) {
         afe_iface_->destroy(afe_data_);
     }
+    if (owns_models_ && models_ != nullptr) {
+        esp_srmodel_deinit(models_);
+    }
     vEventGroupDelete(event_group_);
 }
 
@@ -213,24 +270,42 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
     if (afe_data_ == nullptr) {
         return;
     }
-    // 检查是否正在运行，避免 Stop 后继续 feed 导致 ringbuffer 溢出
+
+    std::lock_guard<std::mutex> lock(input_buffer_mutex_);
     if ((xEventGroupGetBits(event_group_) & PROCESSOR_RUNNING) == 0) {
         return;
     }
-    // 喂数据前短暂延时，给 fetch 任务处理时间，避免 ringbuffer 溢出
-    vTaskDelay(pdMS_TO_TICKS(1));
-    afe_iface_->feed(afe_data_, data.data());
+
+    input_buffer_.insert(input_buffer_.end(), data.begin(), data.end());
+    const size_t chunk_size =
+        afe_iface_->get_feed_chunksize(afe_data_) * codec_->input_channels();
+    while (input_buffer_.size() >= chunk_size) {
+        afe_iface_->feed(afe_data_, input_buffer_.data());
+        input_buffer_.erase(input_buffer_.begin(),
+                            input_buffer_.begin() + chunk_size);
+    }
 }
 
 void AfeAudioProcessor::Start() {
+    device_aec_enabled_ = false;
+    if (afe_data_ != nullptr) {
+        ESP_LOGI(TAG, "🎤 Listening 模式：VAD enabled%s",
+                 aec_available_ ? ", AEC disabled" : "");
+        if (aec_available_) {
+            afe_iface_->disable_aec(afe_data_);
+        }
+        afe_iface_->enable_vad(afe_data_);
+    }
     xEventGroupSetBits(event_group_, PROCESSOR_RUNNING);
 }
 
 void AfeAudioProcessor::Stop() {
     xEventGroupClearBits(event_group_, PROCESSOR_RUNNING);
+    std::lock_guard<std::mutex> lock(input_buffer_mutex_);
     if (afe_data_ != nullptr) {
         afe_iface_->reset_buffer(afe_data_);
     }
+    input_buffer_.clear();
 }
 
 bool AfeAudioProcessor::IsRunning() {
@@ -269,9 +344,11 @@ void AfeAudioProcessor::AudioProcessorTask() {
         if (vad_state_change_callback_) {
             if (res->vad_state == VAD_SPEECH && !is_speaking_) {
                 is_speaking_ = true;
+                ESP_LOGI(TAG, "VAD: speech detected");
                 vad_state_change_callback_(true);
             } else if (res->vad_state == VAD_SILENCE && is_speaking_) {
                 is_speaking_ = false;
+                ESP_LOGI(TAG, "VAD: silence detected");
                 vad_state_change_callback_(false);
             }
         }
@@ -300,15 +377,29 @@ void AfeAudioProcessor::AudioProcessorTask() {
 }
 
 void AfeAudioProcessor::EnableDeviceAec(bool enable) {
+    if (!has_reference_) {
+        ESP_LOGW(TAG, "Device AEC requested but no reference channel is available");
+        return;
+    }
+    if (!aec_available_) {
+        ESP_LOGW(TAG, "Device AEC requested but AEC was not initialized in the AFE");
+        return;
+    }
     if (enable) {
 #if CONFIG_USE_DEVICE_AEC
+        ESP_LOGI(TAG, "🔊 Device AEC enabled");
         afe_iface_->disable_vad(afe_data_);
         afe_iface_->enable_aec(afe_data_);
+        device_aec_enabled_ = true;
 #else
         ESP_LOGE(TAG, "Device AEC is not supported");
 #endif
     } else {
-        afe_iface_->disable_aec(afe_data_);
+        ESP_LOGI(TAG, "🎤 Device AEC disabled, VAD enabled");
+        if (device_aec_enabled_) {
+            afe_iface_->disable_aec(afe_data_);
+            device_aec_enabled_ = false;
+        }
         afe_iface_->enable_vad(afe_data_);
     }
 }

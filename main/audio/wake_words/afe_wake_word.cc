@@ -8,6 +8,10 @@
 
 #define TAG "AfeWakeWord"
 
+namespace {
+constexpr int64_t kWakeWordRestartGuardUs = 350 * 1000;
+}
+
 AfeWakeWord::AfeWakeWord()
     : afe_data_(nullptr),
       wake_word_pcm_(),
@@ -17,9 +21,7 @@ AfeWakeWord::AfeWakeWord()
 }
 
 AfeWakeWord::~AfeWakeWord() {
-    if (afe_data_ != nullptr) {
-        afe_iface_->destroy(afe_data_);
-    }
+    Release();
 
     if (wake_word_encode_task_stack_ != nullptr) {
         heap_caps_free(wake_word_encode_task_stack_);
@@ -29,7 +31,7 @@ AfeWakeWord::~AfeWakeWord() {
         heap_caps_free(wake_word_encode_task_buffer_);
     }
 
-    if (models_ != nullptr) {
+    if (owns_models_ && models_ != nullptr) {
         esp_srmodel_deinit(models_);
     }
 
@@ -39,11 +41,15 @@ AfeWakeWord::~AfeWakeWord() {
 bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     codec_ = codec;
     int ref_num = codec_->input_reference() ? 1 : 0;
+    wakenet_model_ = nullptr;
+    wake_words_.clear();
 
     if (models_list == nullptr) {
         models_ = esp_srmodel_init("model");
+        owns_models_ = true;
     } else {
         models_ = models_list;
+        owns_models_ = false;
     }
 
     if (models_ == nullptr || models_->num == -1) {
@@ -69,40 +75,56 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
         input_format.push_back('M');
     }
     for (int i = 0; i < ref_num; i++) {
+#if CONFIG_BOARD_TYPE_DUAL_MIC && CONFIG_USE_DEVICE_AEC
         input_format.push_back('R');
+#else
+        // Idle wake-word detection does not need playback reference on the
+        // dual-mic board; treat the extra slot as unused to improve recall.
+        input_format.push_back('N');
+#endif
     }
-    // v12优化：使用普通模式以获得更好的 AEC 效果，提高打断灵敏度
-    // 在机器人说话时，需要更强的回声消除才能准确检测唤醒词
     ESP_LOGI(TAG, "AFE input_format: %s (channels=%d, ref=%d)", 
              input_format.c_str(), codec_->input_channels(), ref_num);
     
-    afe_config_t* afe_config = afe_config_init(input_format.c_str(), models_, AFE_TYPE_SR, AFE_MODE_LOW_COST);
-    afe_config->aec_init = codec_->input_reference();
-    // 🛡️ 使用 SR_LOW_COST 模式的 AEC，VOIP 模式太耗 CPU 会触发看门狗
-    afe_config->aec_mode = AEC_MODE_SR_LOW_COST;
+    afe_config_t* afe_config = afe_config_init(input_format.c_str(), models_, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
+    if (afe_config == nullptr) {
+        ESP_LOGE(TAG, "Failed to create wake word AFE config");
+        return false;
+    }
+    afe_config->aec_init =
+#if CONFIG_BOARD_TYPE_DUAL_MIC && CONFIG_USE_DEVICE_AEC
+        codec_->input_reference();
+#else
+        false;
+#endif
+    afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
     afe_config->afe_perferred_core = 1;
-    afe_config->afe_perferred_priority = 3;  // 提高优先级，避免 ringbuffer 溢出
+    afe_config->afe_perferred_priority = 1;
     afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
-    afe_config->afe_ringbuf_size = 50;  // 增加 ringbuffer 大小
-    
-    // 唤醒词检测阶段不启用降噪，避免 CPU 过载
-    // 降噪会在语音识别阶段启用（说话时才启动）
-    ESP_LOGI(TAG, "唤醒词检测: 降噪已禁用（避免CPU过载）");
     
     afe_iface_ = esp_afe_handle_from_config(afe_config);
+    if (afe_iface_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to get AFE interface from config");
+        return false;
+    }
     afe_data_ = afe_iface_->create_from_config(afe_config);
+    if (afe_data_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create wake word AFE instance");
+        return false;
+    }
+    if (afe_data_ != nullptr && wakenet_model_ != nullptr) {
+        afe_iface_->set_wakenet_threshold(afe_data_, 1, 0.48f);
+        ESP_LOGI(TAG, "Wake word threshold set to 0.48 for %s", wakenet_model_);
+    }
 
-    // 降低唤醒词检测阈值，提高打断灵敏度
-    // 阈值范围 0.4 ~ 0.9999，越低越灵敏（但误触发也会增加）
-    // 默认阈值约 0.5，设置为 0.48 平衡灵敏度和误触发
-    afe_iface_->set_wakenet_threshold(afe_data_, 1, 0.48f);
-    ESP_LOGI(TAG, "唤醒词检测阈值已设置为 0.48（默认约0.5）");
-
-    xTaskCreate([](void* arg) {
-        auto this_ = (AfeWakeWord*)arg;
-        this_->AudioDetectionTask();
-        vTaskDelete(NULL);
-    }, "audio_detection", 4096, this, 3, nullptr);
+    if (!detection_task_created_) {
+        xTaskCreate([](void* arg) {
+            auto this_ = (AfeWakeWord*)arg;
+            this_->AudioDetectionTask();
+            vTaskDelete(NULL);
+        }, "audio_detection", 4096, this, 3, nullptr);
+        detection_task_created_ = true;
+    }
 
     return true;
 }
@@ -112,25 +134,51 @@ void AfeWakeWord::OnWakeWordDetected(std::function<void(const std::string& wake_
 }
 
 void AfeWakeWord::Start() {
+    start_guard_deadline_us_ = esp_timer_get_time() + kWakeWordRestartGuardUs;
+    ESP_LOGI(TAG, "Wake word detection started");
     xEventGroupSetBits(event_group_, DETECTION_RUNNING_EVENT);
 }
 
 void AfeWakeWord::Stop() {
+    ESP_LOGI(TAG, "Wake word detection stopped");
     xEventGroupClearBits(event_group_, DETECTION_RUNNING_EVENT);
+    std::lock_guard<std::mutex> lock(input_buffer_mutex_);
     if (afe_data_ != nullptr) {
         afe_iface_->reset_buffer(afe_data_);
     }
+    input_buffer_.clear();
+}
+
+void AfeWakeWord::Release() {
+    Stop();
+    std::lock_guard<std::mutex> lock(input_buffer_mutex_);
+    if (afe_data_ != nullptr && afe_iface_ != nullptr) {
+        afe_iface_->destroy(afe_data_);
+    }
+    afe_data_ = nullptr;
+    afe_iface_ = nullptr;
+    wakenet_model_ = nullptr;
+    input_buffer_.clear();
+    wake_words_.clear();
 }
 
 void AfeWakeWord::Feed(const std::vector<int16_t>& data) {
     if (afe_data_ == nullptr) {
         return;
     }
-    // 检查是否正在运行，避免 Stop 后继续 feed 导致 ringbuffer 溢出
-    if ((xEventGroupGetBits(event_group_) & DETECTION_RUNNING_EVENT) == 0) {
+
+    std::lock_guard<std::mutex> lock(input_buffer_mutex_);
+    if (!(xEventGroupGetBits(event_group_) & DETECTION_RUNNING_EVENT)) {
         return;
     }
-    afe_iface_->feed(afe_data_, data.data());
+    input_buffer_.insert(input_buffer_.end(), data.begin(), data.end());
+    size_t chunk_size = afe_iface_->get_feed_chunksize(afe_data_) *
+                        codec_->input_channels();
+    while (input_buffer_.size() >= chunk_size) {
+        afe_iface_->feed(afe_data_, input_buffer_.data());
+        input_buffer_.erase(input_buffer_.begin(),
+                            input_buffer_.begin() + chunk_size);
+    }
 }
 
 size_t AfeWakeWord::GetFeedSize() {
@@ -148,6 +196,9 @@ void AfeWakeWord::AudioDetectionTask() {
 
     while (true) {
         xEventGroupWaitBits(event_group_, DETECTION_RUNNING_EVENT, pdFALSE, pdTRUE, portMAX_DELAY);
+        if (afe_data_ == nullptr || afe_iface_ == nullptr) {
+            continue;
+        }
 
         auto res = afe_iface_->fetch_with_delay(afe_data_, portMAX_DELAY);
         if (res == nullptr || res->ret_value == ESP_FAIL) {
@@ -158,6 +209,24 @@ void AfeWakeWord::AudioDetectionTask() {
         StoreWakeWordData(res->data, res->data_size / sizeof(int16_t));
 
         if (res->wakeup_state == WAKENET_DETECTED) {
+            if (esp_timer_get_time() < start_guard_deadline_us_) {
+                ESP_LOGW(TAG,
+                         "Ignoring wake word during restart guard window (vad=%d, volume=%.1f dB)",
+                         res->vad_state, res->data_volume);
+                Stop();
+                Start();
+                continue;
+            }
+
+            if (res->vad_state != VAD_SPEECH) {
+                ESP_LOGW(TAG,
+                         "Wake word detected without speech flag (vad=%d, volume=%.1f dB)",
+                         res->vad_state, res->data_volume);
+                Stop();
+                Start();
+                continue;
+            }
+
             Stop();
             last_detected_wake_word_ = wake_words_[res->wakenet_model_index - 1];
 
